@@ -1,7 +1,26 @@
+import java.io.File
+
 plugins {
   id("com.android.application")
   id("org.jetbrains.kotlin.plugin.compose")
 }
+
+val versionPropsFile = layout.projectDirectory.file("version.properties")
+val versionPropsText = providers.fileContents(versionPropsFile).asText.orNull
+val baseVersionCode = versionPropsText
+  ?.lineSequence()
+  ?.firstOrNull { it.startsWith("VERSION_CODE=") }
+  ?.substringAfter("=")
+  ?.trim()
+  ?.toIntOrNull() ?: 9
+
+val isDebugBuild = gradle.startParameter.taskNames.any {
+  it.contains("assembleDebug", ignoreCase = true) ||
+    it.contains("installDebug", ignoreCase = true) ||
+    it.equals("assemble", ignoreCase = true)
+}
+val computedVersionCode = if (isDebugBuild) baseVersionCode + 1 else baseVersionCode
+val versionPropsPath = versionPropsFile.asFile.absolutePath
 
 android {
   namespace = "com.example"
@@ -11,7 +30,7 @@ android {
     applicationId = "com.aistudio.clotch.xkmqvr"
     minSdk = 24
     targetSdk = 36
-    versionCode = 1
+    versionCode = computedVersionCode
     versionName = "1.0"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
@@ -92,4 +111,29 @@ dependencies {
 
   debugImplementation("androidx.compose.ui:ui-test-manifest")
   debugImplementation("androidx.compose.ui:ui-tooling")
+}
+
+abstract class SaveVersionCodeTask : DefaultTask() {
+  @get:Input
+  abstract val versionCodeToSave: Property<Int>
+
+  @get:Input
+  abstract val targetFilePath: Property<String>
+
+  @TaskAction
+  fun save() {
+    File(targetFilePath.get()).writeText("VERSION_CODE=${versionCodeToSave.get()}\n")
+  }
+}
+
+val saveDebugVersionCode = tasks.register<SaveVersionCodeTask>("saveDebugVersionCode") {
+  versionCodeToSave.set(computedVersionCode)
+  targetFilePath.set(versionPropsPath)
+  enabled = isDebugBuild
+}
+
+if (isDebugBuild) {
+  tasks.matching { it.name == "assembleDebug" }.configureEach {
+    finalizedBy(saveDebugVersionCode)
+  }
 }

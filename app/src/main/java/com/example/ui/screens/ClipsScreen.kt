@@ -1,6 +1,11 @@
 package com.example.ui.screens
 
+import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
+import android.media.MediaMetadataRetriever
+import android.net.Uri
+import android.os.Build
 import android.text.format.Formatter
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
@@ -43,16 +48,20 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import coil.compose.AsyncImage
+import coil.request.ImageRequest
 import com.example.data.RecordedClip
 import com.example.ui.theme.CarbonSurface
 import com.example.ui.theme.ClotchBlue
@@ -67,6 +76,8 @@ import com.example.ui.theme.TextSecondary
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 @Composable
 fun ClipsScreen(
@@ -294,6 +305,15 @@ private fun ClipItemCard(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
+                val thumbnailBitmap by produceState<Bitmap?>(
+                    initialValue = null,
+                    key1 = clip.uri
+                ) {
+                    value = withContext(Dispatchers.IO) {
+                        extractFirstVideoFrame(context, clip.uri)
+                    }
+                }
+
                 Box(
                     modifier = Modifier
                         .size(56.dp)
@@ -302,12 +322,26 @@ private fun ClipItemCard(
                         .border(1.dp, HairlineBorder, RoundedCornerShape(12.dp)),
                     contentAlignment = Alignment.Center
                 ) {
-                    Icon(
-                        imageVector = Icons.Filled.Movie,
-                        contentDescription = null,
-                        tint = ClotchBlue,
-                        modifier = Modifier.size(26.dp)
-                    )
+                    if (thumbnailBitmap != null) {
+                        AsyncImage(
+                            model = ImageRequest.Builder(context)
+                                .data(thumbnailBitmap)
+                                .crossfade(true)
+                                .build(),
+                            contentDescription = "Thumbnail for ${clip.displayName}",
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .clip(RoundedCornerShape(12.dp))
+                        )
+                    } else {
+                        Icon(
+                            imageVector = Icons.Filled.Movie,
+                            contentDescription = null,
+                            tint = ClotchBlue,
+                            modifier = Modifier.size(26.dp)
+                        )
+                    }
                 }
 
                 Column(
@@ -422,5 +456,26 @@ private fun ClipMetaPill(label: String) {
             color = TextSecondary,
             modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
         )
+    }
+}
+
+private fun extractFirstVideoFrame(context: Context, uri: Uri): Bitmap? {
+    val retriever = MediaMetadataRetriever()
+    return try {
+        retriever.setDataSource(context, uri)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+            retriever.getScaledFrameAtTime(
+                0L,
+                MediaMetadataRetriever.OPTION_CLOSEST_SYNC,
+                224,
+                224
+            ) ?: retriever.getFrameAtTime(0L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+        } else {
+            retriever.getFrameAtTime(0L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+        }
+    } catch (_: Throwable) {
+        null
+    } finally {
+        runCatching { retriever.release() }
     }
 }

@@ -8,12 +8,16 @@ enum class VideoResolution(
     val shortSide: Int,
     val longSide: Int
 ) {
+    LD_240P("240p", "240p", 240, 426),
+    SD_360P("360p", "360p", 360, 640),
+    SD_480P("480p", "480p", 480, 854),
     HD_720P("720p HD", "720p", 720, 1280),
     FHD_1080P("1080p FHD", "1080p", 1080, 1920),
     QHD_1440P("1440p QHD", "1440p", 1440, 2560)
 }
 
 enum class FrameRateOption(val fps: Int, val label: String) {
+    FPS_24(24, "24 FPS"),
     FPS_30(30, "30 FPS"),
     FPS_60(60, "60 FPS"),
     FPS_90(90, "90 FPS"),

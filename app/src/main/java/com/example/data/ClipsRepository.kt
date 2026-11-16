@@ -108,7 +108,7 @@ class ClipsRepository(private val context: Context) {
             }
             val uri = FileProvider.getUriForFile(
                 context,
-                "${context.packageName}.fileprovider",
+                "com.shutberry.clotch.fileprovider",
                 file
             )
             RecordedClip(
