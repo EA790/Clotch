@@ -11,7 +11,10 @@ import com.example.data.CountdownOption
 import com.example.data.FrameRateOption
 import com.example.data.OrientationOption
 import com.example.data.RecordedClip
+import com.example.data.RecordingMode
+import com.example.data.VideoFormat
 import com.example.data.VideoResolution
+import com.example.discord.DetectedAppsResult
 import com.example.discord.DiscordConnectionState
 import com.example.discord.DiscordPresencePayload
 import com.example.discord.DiscordProfileManager
@@ -37,6 +40,8 @@ class ClotchViewModel(application: Application) : AndroidViewModel(application) 
         controller.discordConnectionState
     val discordPresence: StateFlow<DiscordPresencePayload?> =
         controller.discordPresence
+    val detectedApps: StateFlow<DetectedAppsResult> = controller.detectedApps
+    val hasUsageStatsPermission: StateFlow<Boolean> = controller.hasUsageStatsPermission
 
     val discordProfile: StateFlow<DiscordUserProfile> = profileManager.profileFlow
         .stateIn(
@@ -57,6 +62,16 @@ class ClotchViewModel(application: Application) : AndroidViewModel(application) 
 
     fun syncIdleNotification() {
         controller.syncIdleNotification(settings.value)
+    }
+
+    fun refreshUsageStatsPermission() {
+        if (controller.refreshUsageStatsPermission()) {
+            controller.scanAppsNow(showFeedbackToast = false)
+        }
+    }
+
+    fun scanAppsNow() {
+        controller.scanAppsNow(showFeedbackToast = true)
     }
 
     fun startCountdownAndCapture(onReadyToRequestProjection: () -> Unit) {
@@ -120,6 +135,25 @@ class ClotchViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    fun setVideoFormat(format: VideoFormat) {
+        viewModelScope.launch {
+            settingsRepo.setVideoFormat(format)
+            controller.syncIdleNotification(settings.value.copy(videoFormat = format))
+        }
+    }
+
+    fun setRecordingMode(mode: RecordingMode) {
+        viewModelScope.launch {
+            settingsRepo.setRecordingMode(mode)
+        }
+    }
+
+    fun setRecordAudioSeparately(enabled: Boolean) {
+        viewModelScope.launch {
+            settingsRepo.setRecordAudioSeparately(enabled)
+        }
+    }
+
     fun setRecordMicAudio(enabled: Boolean) {
         viewModelScope.launch {
             settingsRepo.setRecordMicAudio(enabled)
@@ -137,43 +171,7 @@ class ClotchViewModel(application: Application) : AndroidViewModel(application) 
         viewModelScope.launch {
             settingsRepo.setGameName(name)
             controller.syncIdleNotification(settings.value.copy(gameName = name.ifBlank { "Mobile Game" }))
-            val state = recorderState.value
-            if (state is RecorderState.Recording || state is RecorderState.Paused) {
-                val isPaused = state is RecorderState.Paused
-                val fps = when (state) {
-                    is RecorderState.Recording -> state.activeFps
-                    is RecorderState.Paused -> state.activeFps
-                    else -> settings.value.fps.fps
-                }
-                val width = when (state) {
-                    is RecorderState.Recording -> state.activeWidth
-                    is RecorderState.Paused -> state.activeWidth
-                    else -> settings.value.resolution.shortSide
-                }
-                val height = when (state) {
-                    is RecorderState.Recording -> state.activeHeight
-                    is RecorderState.Paused -> state.activeHeight
-                    else -> settings.value.resolution.longSide
-                }
-                val bitrate = when (state) {
-                    is RecorderState.Recording -> state.activeBitrateMbps
-                    is RecorderState.Paused -> state.activeBitrateMbps
-                    else -> settings.value.bitrate.mbps
-                }
-                controller.discordRpcClient.updatePresence(
-                    payload = DiscordPresencePayload(
-                        isRecording = true,
-                        isPaused = isPaused,
-                        gameName = name.ifBlank { "Mobile Game" },
-                        fps = fps,
-                        resolutionLabel = "${minOf(width, height)}p",
-                        bitrateMbps = bitrate,
-                        startedAtEpochMs = System.currentTimeMillis()
-                    ),
-                    rpcEnabled = settings.value.discordRpcEnabled,
-                    token = settings.value.discordToken
-                )
-            }
+            controller.pushCompositePresence()
         }
     }
 
@@ -182,6 +180,8 @@ class ClotchViewModel(application: Application) : AndroidViewModel(application) 
             settingsRepo.setDiscordRpcEnabled(enabled)
             if (!enabled) {
                 controller.discordRpcClient.disconnect(clearPresence = true)
+            } else {
+                controller.pushCompositePresence()
             }
         }
     }

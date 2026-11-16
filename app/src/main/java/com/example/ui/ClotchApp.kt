@@ -8,6 +8,7 @@ import android.content.pm.PackageManager
 import android.media.projection.MediaProjectionManager
 import android.net.Uri
 import android.os.Build
+import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
@@ -26,7 +27,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -74,6 +74,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavGraph.Companion.findStartDestination
@@ -83,6 +85,8 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import coil.compose.AsyncImage
 import com.example.R
+import com.example.data.RecordingMode
+import com.example.recording.RecorderState
 import com.example.ui.components.DiscordSignInDialog
 import com.example.ui.screens.CaptureScreen
 import com.example.ui.screens.ClipsScreen
@@ -134,11 +138,13 @@ fun ClotchApp(
     val discordState by viewModel.discordConnectionState.collectAsStateWithLifecycle()
     val discordPresence by viewModel.discordPresence.collectAsStateWithLifecycle()
     val discordProfile by viewModel.discordProfile.collectAsStateWithLifecycle()
+    val detectedApps by viewModel.detectedApps.collectAsStateWithLifecycle()
+    val hasUsageStatsPermission by viewModel.hasUsageStatsPermission.collectAsStateWithLifecycle()
     val oauthClientId by viewModel.oauthClientId.collectAsStateWithLifecycle()
     val isFetchingProfile by viewModel.isFetchingProfile.collectAsStateWithLifecycle()
 
     var showSignInDialog by remember { mutableStateOf(false) }
-    var pendingProjectionLaunchAfterNotif by remember { mutableStateOf(false) }
+    var pendingCaptureAfterPermission by remember { mutableStateOf(false) }
 
     val projectionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
@@ -164,8 +170,8 @@ fun ClotchApp(
         } else {
             viewModel.showToast("Notification permission denied; recording controls won't appear in shade")
         }
-        if (pendingProjectionLaunchAfterNotif) {
-            pendingProjectionLaunchAfterNotif = false
+        if (pendingCaptureAfterPermission) {
+            pendingCaptureAfterPermission = false
             viewModel.startCountdownAndCapture { launchProjectionRequest() }
         }
     }
@@ -173,27 +179,60 @@ fun ClotchApp(
     val micPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
     ) { granted ->
-        if (granted) {
-            viewModel.setRecordMicAudio(true)
-        } else {
-            viewModel.setRecordMicAudio(false)
-            viewModel.showToast("Microphone permission denied; recording video only")
+        if (!granted) {
+            viewModel.showToast("Microphone permission denied; recording video without mic audio")
+        }
+        if (pendingCaptureAfterPermission) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                val hasNotif = ContextCompat.checkSelfPermission(
+                    context,
+                    Manifest.permission.POST_NOTIFICATIONS
+                ) == PackageManager.PERMISSION_GRANTED
+                if (!hasNotif) {
+                    notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                    return@rememberLauncherForActivityResult
+                }
+            }
+            pendingCaptureAfterPermission = false
+            viewModel.startCountdownAndCapture { launchProjectionRequest() }
         }
     }
 
     fun requestStartCapture() {
+        if (settings.needsMicPermission) {
+            val hasMic = ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.RECORD_AUDIO
+            ) == PackageManager.PERMISSION_GRANTED
+            if (!hasMic) {
+                pendingCaptureAfterPermission = true
+                micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                return
+            }
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             val hasNotif = ContextCompat.checkSelfPermission(
                 context,
                 Manifest.permission.POST_NOTIFICATIONS
             ) == PackageManager.PERMISSION_GRANTED
             if (!hasNotif) {
-                pendingProjectionLaunchAfterNotif = true
+                pendingCaptureAfterPermission = true
                 notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
                 return
             }
         }
         viewModel.startCountdownAndCapture { launchProjectionRequest() }
+    }
+
+    fun openUsageAccessSettings() {
+        val intent = Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        runCatching {
+            context.startActivity(intent)
+        }.onFailure {
+            viewModel.showToast("Unable to open Usage Access settings")
+        }
     }
 
     fun navigateTo(route: ClotchRoute) {
@@ -203,6 +242,10 @@ fun ClotchApp(
             restoreState = true
         }
         coroutineScope.launch { drawerState.close() }
+    }
+
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
+        viewModel.refreshUsageStatsPermission()
     }
 
     LaunchedEffect(Unit) {
@@ -441,7 +484,12 @@ fun ClotchApp(
                         discordState = discordState,
                         clipsCount = clips.size,
                         onOpenPresence = { navigateTo(ClotchRoute.Presence) },
-                        onOpenRecording = { navigateTo(ClotchRoute.Recording) },
+                        onOpenRecording = {
+                            navigateTo(ClotchRoute.Recording)
+                            if (recorderState is RecorderState.Idle) {
+                                requestStartCapture()
+                            }
+                        },
                         onOpenClips = { navigateTo(ClotchRoute.Clips) }
                     )
                 }
@@ -453,12 +501,16 @@ fun ClotchApp(
                         discordState = discordState,
                         discordPresence = discordPresence,
                         discordProfile = discordProfile,
+                        detectedApps = detectedApps,
+                        hasUsageStatsPermission = hasUsageStatsPermission,
                         isFetchingProfile = isFetchingProfile,
                         onGameNameChanged = { viewModel.setGameName(it) },
                         onOpenSignInDialog = { showSignInDialog = true },
                         onSignOutDiscord = { viewModel.signOutDiscord() },
                         onConnectRpc = { viewModel.connectDiscordRpc() },
-                        onDisconnectRpc = { viewModel.disconnectDiscordRpc() }
+                        onDisconnectRpc = { viewModel.disconnectDiscordRpc() },
+                        onRequestUsageAccess = { openUsageAccessSettings() },
+                        onScanAppsNow = { viewModel.scanAppsNow() }
                     )
                 }
 
@@ -504,27 +556,38 @@ fun ClotchApp(
                         settings = settings,
                         discordState = discordState,
                         discordProfile = discordProfile,
+                        hasUsageStatsPermission = hasUsageStatsPermission,
                         isFetchingProfile = isFetchingProfile,
                         onSelectResolution = { viewModel.setResolution(it) },
                         onSelectFps = { viewModel.setFps(it) },
                         onSelectBitrate = { viewModel.setBitrate(it) },
                         onSelectOrientation = { viewModel.setOrientation(it) },
-                        onSelectCountdown = { viewModel.setCountdown(it) },
-                        onToggleMicAudio = { enabled ->
+                        onSelectVideoFormat = { viewModel.setVideoFormat(it) },
+                        onSelectRecordingMode = { mode ->
+                            viewModel.setRecordingMode(mode)
+                            if (mode == RecordingMode.AUDIO_AND_VIDEO) {
+                                val hasMic = ContextCompat.checkSelfPermission(
+                                    context,
+                                    Manifest.permission.RECORD_AUDIO
+                                ) == PackageManager.PERMISSION_GRANTED
+                                if (!hasMic) {
+                                    micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                                }
+                            }
+                        },
+                        onToggleRecordAudioSeparately = { enabled ->
+                            viewModel.setRecordAudioSeparately(enabled)
                             if (enabled) {
                                 val hasMic = ContextCompat.checkSelfPermission(
                                     context,
                                     Manifest.permission.RECORD_AUDIO
                                 ) == PackageManager.PERMISSION_GRANTED
-                                if (hasMic) {
-                                    viewModel.setRecordMicAudio(true)
-                                } else {
+                                if (!hasMic) {
                                     micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
                                 }
-                            } else {
-                                viewModel.setRecordMicAudio(false)
                             }
                         },
+                        onSelectCountdown = { viewModel.setCountdown(it) },
                         onToggleQuickNotification = { enabled ->
                             if (enabled && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                                 val hasNotif = ContextCompat.checkSelfPermission(
@@ -548,7 +611,9 @@ fun ClotchApp(
                         },
                         onDisconnectDiscord = { viewModel.disconnectDiscordRpc() },
                         onOpenSignInDialog = { showSignInDialog = true },
-                        onSignOutDiscord = { viewModel.signOutDiscord() }
+                        onSignOutDiscord = { viewModel.signOutDiscord() },
+                        onRequestUsageAccess = { openUsageAccessSettings() },
+                        onScanAppsNow = { viewModel.scanAppsNow() }
                     )
                 }
             }

@@ -124,6 +124,8 @@ dependencies {
   // implementation(libs.logging.interceptor)
   // implementation(libs.moshi.kotlin)
   implementation(libs.okhttp)
+  implementation("com.github.dead8309:KizzyRPC:1.0.71")
+  implementation("dev.ffmpegkit-maintained:ffmpeg-kit-full:8.1.7")
   // implementation(libs.play.services.location)
   // implementation(libs.retrofit)
   testImplementation(libs.androidx.compose.ui.test.junit4)

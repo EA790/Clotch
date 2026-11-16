@@ -27,6 +27,7 @@ class ClipsRepository(private val context: Context) {
         val projection = arrayOf(
             MediaStore.Video.Media._ID,
             MediaStore.Video.Media.DISPLAY_NAME,
+            MediaStore.Video.Media.MIME_TYPE,
             MediaStore.Video.Media.DURATION,
             MediaStore.Video.Media.SIZE,
             MediaStore.Video.Media.WIDTH,
@@ -47,6 +48,7 @@ class ClipsRepository(private val context: Context) {
             )?.use { cursor ->
                 val idCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media._ID)
                 val nameCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.DISPLAY_NAME)
+                val mimeCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.MIME_TYPE)
                 val durCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.DURATION)
                 val sizeCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.SIZE)
                 val wCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.WIDTH)
@@ -59,16 +61,19 @@ class ClipsRepository(private val context: Context) {
                         MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
                         id
                     )
+                    val name = cursor.getString(nameCol) ?: "clip_clotch.mp4"
+                    val mime = cursor.getString(mimeCol) ?: inferMimeType(name)
                     clips.add(
                         RecordedClip(
                             id = id,
                             uri = contentUri,
-                            displayName = cursor.getString(nameCol) ?: "Clotch_Clip.mp4",
+                            displayName = name,
                             durationMs = cursor.getLong(durCol),
                             sizeBytes = cursor.getLong(sizeCol),
                             width = cursor.getInt(wCol),
                             height = cursor.getInt(hCol),
                             dateAddedSec = cursor.getLong(dateCol),
+                            mimeType = mime,
                             isFileUri = false
                         )
                     )
@@ -81,8 +86,9 @@ class ClipsRepository(private val context: Context) {
     private fun loadFromAppMoviesDir(): List<RecordedClip> {
         val dir = File(context.getExternalFilesDir(Environment.DIRECTORY_MOVIES), "Clotch")
         if (!dir.exists()) return emptyList()
+        val supportedExt = setOf("mp4", "mkv", "3gp")
         val files = dir.listFiles { file ->
-            file.isFile && file.extension.equals("mp4", ignoreCase = true) && file.length() > 0L
+            file.isFile && file.extension.lowercase() in supportedExt && file.length() > 0L
         }?.sortedByDescending { it.lastModified() } ?: return emptyList()
 
         return files.mapIndexed { index, file ->
@@ -114,8 +120,17 @@ class ClipsRepository(private val context: Context) {
                 width = width,
                 height = height,
                 dateAddedSec = file.lastModified() / 1000L,
+                mimeType = inferMimeType(file.name),
                 isFileUri = true
             )
+        }
+    }
+
+    private fun inferMimeType(fileName: String): String {
+        return when {
+            fileName.endsWith(".mkv", ignoreCase = true) -> "video/x-matroska"
+            fileName.endsWith(".3gp", ignoreCase = true) -> "video/3gpp"
+            else -> "video/mp4"
         }
     }
 

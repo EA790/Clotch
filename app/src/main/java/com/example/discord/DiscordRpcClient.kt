@@ -6,54 +6,31 @@ import android.net.NetworkCapabilities
 import android.os.Handler
 import android.os.Looper
 import android.widget.Toast
+import com.my.kizzyrpc.KizzyRPC
+import com.my.kizzyrpc.model.Activity
+import com.my.kizzyrpc.model.Assets
+import com.my.kizzyrpc.model.Timestamps
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import okhttp3.OkHttpClient
-import okhttp3.Request
-import okhttp3.Response
-import okhttp3.WebSocket
-import okhttp3.WebSocketListener
-import org.json.JSONArray
-import org.json.JSONObject
-import java.util.concurrent.TimeUnit
-import kotlin.random.Random
 
 /**
- * Lightweight Discord Gateway v10 WebSocket RPC client for Android.
- * Maintains a stable connection with heartbeats and exponential-backoff reconnection,
- * updating OP 3 Presence when screen recording starts/pauses/stops.
- * All failures are gracefully handled without impacting screen recording and surfaced via Toast.
+ * Discord Rich Presence client powered by KizzyRPC (dead8309/KizzyRPC).
+ * Uses the user's Discord token and supports external largeImage URLs.
+ * All errors are gracefully caught and surfaced via Toast without interrupting recording.
  */
 class DiscordRpcClient(private val context: Context) {
 
     companion object {
-        private const val DISCORD_GATEWAY_URL = "wss://gateway.discord.gg/?v=10&encoding=json"
-        private const val OP_DISPATCH = 0
-        private const val OP_HEARTBEAT = 1
-        private const val OP_IDENTIFY = 2
-        private const val OP_PRESENCE_UPDATE = 3
-        private const val OP_RECONNECT = 7
-        private const val OP_INVALID_SESSION = 9
-        private const val OP_HELLO = 10
-        private const val OP_HEARTBEAT_ACK = 11
+        private const val CLOTCH_DISCORD_APP_ID = "962990036020756480"
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val mainHandler = Handler(Looper.getMainLooper())
-
-    private val okHttpClient = OkHttpClient.Builder()
-        .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(0, TimeUnit.MILLISECONDS)
-        .writeTimeout(15, TimeUnit.SECONDS)
-        .build()
 
     private val _connectionState =
         MutableStateFlow<DiscordConnectionState>(DiscordConnectionState.Disconnected)
@@ -63,33 +40,18 @@ class DiscordRpcClient(private val context: Context) {
     val currentPresence: StateFlow<DiscordPresencePayload?> = _currentPresence.asStateFlow()
 
     @Volatile
-    private var webSocket: WebSocket? = null
-
-    @Volatile
-    private var lastSequence: Int? = null
+    private var kizzyRpc: KizzyRPC? = null
 
     @Volatile
     private var activeToken: String = ""
 
     @Volatile
-    private var connectedUsername: String = "Discord User"
-
-    @Volatile
-    private var userInitiatedDisconnect = false
-
-    @Volatile
-    private var reconnectAttempt = 0
-
-    @Volatile
     private var lastErrorToastAtMs = 0L
-
-    private var heartbeatJob: Job? = null
-    private var reconnectJob: Job? = null
 
     fun connect(token: String, showSuccessToast: Boolean = false) {
         val cleanToken = token.trim()
         if (cleanToken.isEmpty()) {
-            val msg = "Discord RPC unavailable: Add your Discord token in Settings"
+            val msg = "Discord RPC unavailable: Add your Discord token in Settings or Sign In"
             _connectionState.value = DiscordConnectionState.Error(msg, isAuthError = true)
             showToast(msg)
             return
@@ -102,29 +64,27 @@ class DiscordRpcClient(private val context: Context) {
             return
         }
 
-        activeToken = cleanToken
-        userInitiatedDisconnect = false
-        reconnectJob?.cancel()
-        openWebSocket(showSuccessToast)
+        scope.launch {
+            connectAndPushInternal(
+                token = cleanToken,
+                payload = _currentPresence.value,
+                showSuccessToast = showSuccessToast
+            )
+        }
     }
 
     fun disconnect(clearPresence: Boolean = true) {
-        userInitiatedDisconnect = true
-        reconnectJob?.cancel()
-        heartbeatJob?.cancel()
         if (clearPresence) {
             _currentPresence.value = null
-            runCatching { sendClearPresenceInternal() }
         }
-        runCatching { webSocket?.close(1000, "Client disconnected") }
-        webSocket = null
-        _connectionState.value = DiscordConnectionState.Disconnected
+        scope.launch {
+            runCatching { kizzyRpc?.closeRPC() }
+            kizzyRpc = null
+            activeToken = ""
+            _connectionState.value = DiscordConnectionState.Disconnected
+        }
     }
 
-    /**
-     * Called when recording starts, pauses, resumes, or stops.
-     * Always updates local presence preview; attempts live Discord OP 3 sync if enabled.
-     */
     fun updatePresence(
         payload: DiscordPresencePayload?,
         rpcEnabled: Boolean,
@@ -133,297 +93,107 @@ class DiscordRpcClient(private val context: Context) {
         _currentPresence.value = payload
 
         if (!rpcEnabled) {
-            if (webSocket != null) {
-                runCatching { sendClearPresenceInternal() }
+            if (kizzyRpc != null) {
+                scope.launch {
+                    runCatching { kizzyRpc?.closeRPC() }
+                    kizzyRpc = null
+                    _connectionState.value = DiscordConnectionState.Disconnected
+                }
             }
             return
         }
 
         val cleanToken = token.trim()
         if (cleanToken.isEmpty()) {
-            // Only notify if recording started with RPC enabled but no token set
-            if (payload != null && payload.isRecording) {
-                val msg = "Discord RPC skipped: Configure Discord token in Settings"
+            if (payload != null && (payload.isRecording || payload.detectedAppName != null || payload.isLarkPlayerRunning)) {
+                val msg = "Discord RPC skipped: Sign in or add your Discord token"
                 _connectionState.value = DiscordConnectionState.Error(msg, isAuthError = true)
                 showRateLimitedToast(msg)
             }
             return
         }
 
-        activeToken = cleanToken
-        val currentState = _connectionState.value
+        if (!isNetworkAvailable()) {
+            val msg = "Discord RPC error: Network unavailable"
+            _connectionState.value = DiscordConnectionState.Error(msg)
+            showRateLimitedToast(msg)
+            return
+        }
 
-        if (currentState is DiscordConnectionState.Connected && webSocket != null) {
-            val sent = if (payload != null) {
-                sendPresenceInternal(payload)
+        scope.launch {
+            if (payload == null) {
+                runCatching { kizzyRpc?.closeRPC() }
+                kizzyRpc = null
+                _connectionState.value = DiscordConnectionState.Disconnected
             } else {
-                sendClearPresenceInternal()
-            }
-            if (!sent) {
-                val msg = "Discord RPC failed to send status update"
-                _connectionState.value = DiscordConnectionState.Error(msg)
-                showRateLimitedToast(msg)
-            } else {
-                _connectionState.value = DiscordConnectionState.Connected(
-                    username = connectedUsername,
-                    activeStatusText = payload?.formatStatusText()
+                connectAndPushInternal(
+                    token = cleanToken,
+                    payload = payload,
+                    showSuccessToast = false
                 )
             }
-        } else if (payload != null && payload.isRecording) {
-            // Auto-connect seamlessly when recording starts
-            connect(cleanToken, showSuccessToast = false)
         }
     }
 
-    private fun openWebSocket(showSuccessToast: Boolean) {
-        heartbeatJob?.cancel()
-        runCatching { webSocket?.cancel() }
-        _connectionState.value = DiscordConnectionState.Connecting
-
-        val request = Request.Builder()
-            .url(DISCORD_GATEWAY_URL)
-            .build()
-
-        webSocket = okHttpClient.newWebSocket(request, object : WebSocketListener() {
-            override fun onOpen(webSocket: WebSocket, response: Response) {
-                reconnectAttempt = 0
-            }
-
-            override fun onMessage(webSocket: WebSocket, text: String) {
-                handleGatewayMessage(webSocket, text, showSuccessToast)
-            }
-
-            override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
-                webSocket.close(1000, null)
-            }
-
-            override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                heartbeatJob?.cancel()
-                if (userInitiatedDisconnect || code == 1000) {
-                    _connectionState.value = DiscordConnectionState.Disconnected
-                    return
-                }
-                val isAuthFailure = code == 4004 || code == 4014 || code == 4013
-                val message = when (code) {
-                    4004 -> "Discord RPC failed: Authentication failed (invalid token)"
-                    4014 -> "Discord RPC failed: Disallowed gateway intents"
-                    else -> "Discord RPC disconnected (code $code)"
-                }
-                _connectionState.value = DiscordConnectionState.Error(message, isAuthError = isAuthFailure)
-                showRateLimitedToast(message)
-
-                if (!isAuthFailure) {
-                    scheduleReconnect()
-                }
-            }
-
-            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                heartbeatJob?.cancel()
-                if (userInitiatedDisconnect) return
-
-                val detail = t.localizedMessage?.takeIf { it.isNotBlank() } ?: "Connection lost"
-                val message = "Discord RPC error: $detail"
-                _connectionState.value = DiscordConnectionState.Error(message)
-                showRateLimitedToast(message)
-                scheduleReconnect()
-            }
-        })
-    }
-
-    private fun handleGatewayMessage(
-        socket: WebSocket,
-        text: String,
+    private fun connectAndPushInternal(
+        token: String,
+        payload: DiscordPresencePayload?,
         showSuccessToast: Boolean
     ) {
         try {
-            val json = JSONObject(text)
-            val op = json.optInt("op", -1)
-            if (!json.isNull("s")) {
-                lastSequence = json.optInt("s")
+            if (kizzyRpc == null || activeToken != token) {
+                runCatching { kizzyRpc?.closeRPC() }
+                _connectionState.value = DiscordConnectionState.Connecting
+                kizzyRpc = KizzyRPC(token)
+                activeToken = token
             }
 
-            when (op) {
-                OP_HELLO -> {
-                    val d = json.optJSONObject("d")
-                    val intervalMs = d?.optLong("heartbeat_interval", 41250L) ?: 41250L
-                    startHeartbeatLoop(socket, intervalMs)
-                    sendIdentify(socket, activeToken)
-                }
+            val rpc = kizzyRpc
+                ?: throw IllegalStateException("KizzyRPC failed to initialize")
 
-                OP_HEARTBEAT -> {
-                    sendHeartbeat(socket)
-                }
+            val effectivePayload = payload ?: DiscordPresencePayload(
+                isRecording = false,
+                gameName = "Clotch",
+                largeImageUrl = "https://example.com/cat_clotch.png"
+            )
 
-                OP_HEARTBEAT_ACK -> {
-                    // Heartbeat acknowledged cleanly
-                }
-
-                OP_DISPATCH -> {
-                    val eventType = json.optString("t", "")
-                    if (eventType == "READY") {
-                        val userObj = json.optJSONObject("d")?.optJSONObject("user")
-                        val globalName = userObj?.optString("global_name", "")?.takeIf { it.isNotBlank() && it != "null" }
-                        val username = userObj?.optString("username", "")?.takeIf { it.isNotBlank() && it != "null" }
-                        connectedUsername = globalName ?: username ?: "Discord User"
-
-                        val pending = _currentPresence.value
-                        if (pending != null) {
-                            sendPresenceInternal(pending)
-                        }
-                        _connectionState.value = DiscordConnectionState.Connected(
-                            username = connectedUsername,
-                            activeStatusText = pending?.formatStatusText()
-                        )
-                        if (showSuccessToast) {
-                            showToast("Discord RPC connected as $connectedUsername")
-                        }
-                    }
-                }
-
-                OP_RECONNECT -> {
-                    socket.close(4000, "Gateway requested reconnect")
-                    scheduleReconnect()
-                }
-
-                OP_INVALID_SESSION -> {
-                    val resumable = json.optBoolean("d", false)
-                    if (!resumable) {
-                        val msg = "Discord RPC failed: Invalid session or token rejected"
-                        _connectionState.value = DiscordConnectionState.Error(msg, isAuthError = true)
-                        showRateLimitedToast(msg)
-                        socket.close(4004, "Invalid session")
-                    } else {
-                        scheduleReconnect()
-                    }
-                }
-            }
-        } catch (e: Exception) {
-            val msg = "Discord RPC parse error: ${e.localizedMessage ?: "Malformed payload"}"
-            _connectionState.value = DiscordConnectionState.Error(msg)
-            showRateLimitedToast(msg)
-        }
-    }
-
-    private fun startHeartbeatLoop(socket: WebSocket, intervalMs: Long) {
-        heartbeatJob?.cancel()
-        heartbeatJob = scope.launch {
-            val jitter = (intervalMs * Random.nextDouble(0.1, 0.5)).toLong()
-            delay(jitter)
-            while (isActive) {
-                if (!sendHeartbeat(socket)) break
-                delay(intervalMs)
-            }
-        }
-    }
-
-    private fun sendHeartbeat(socket: WebSocket): Boolean {
-        return try {
-            val payload = JSONObject().apply {
-                put("op", OP_HEARTBEAT)
-                if (lastSequence != null) {
-                    put("d", lastSequence)
+            val activity = Activity(
+                applicationId = CLOTCH_DISCORD_APP_ID,
+                name = effectivePayload.activityName(),
+                details = effectivePayload.formatStatusText(),
+                state = effectivePayload.formatSubDetails(),
+                type = effectivePayload.activityType(),
+                timestamps = if (effectivePayload.startedAtEpochMs > 0L) {
+                    Timestamps(start = effectivePayload.startedAtEpochMs)
                 } else {
-                    put("d", JSONObject.NULL)
-                }
-            }
-            socket.send(payload.toString())
-        } catch (_: Exception) {
-            false
-        }
-    }
+                    Timestamps(start = System.currentTimeMillis())
+                },
+                assets = Assets(
+                    largeImage = effectivePayload.largeImageUrl,
+                    smallImage = effectivePayload.smallImageUrl,
+                    largeText = effectivePayload.effectiveGameTitle(),
+                    smallText = if (effectivePayload.isLarkPlayerRunning) "Lark Player" else "Clotch"
+                )
+            )
 
-    private fun sendIdentify(socket: WebSocket, token: String) {
-        try {
-            val properties = JSONObject().apply {
-                put("os", "android")
-                put("browser", "Clotch")
-                put("device", "Clotch")
+            rpc.setActivity(
+                activity = activity,
+                status = "online",
+                since = System.currentTimeMillis()
+            )
+
+            _connectionState.value = DiscordConnectionState.Connected(
+                username = "Discord RPC Active",
+                activeStatusText = effectivePayload.formatStatusText()
+            )
+            if (showSuccessToast) {
+                showToast("Kizzy Discord RPC connected")
             }
-            val data = JSONObject().apply {
-                put("token", token)
-                put("intents", 0)
-                put("properties", properties)
-                _currentPresence.value?.let { pending ->
-                    put("presence", buildPresenceData(pending))
-                }
-            }
-            val identify = JSONObject().apply {
-                put("op", OP_IDENTIFY)
-                put("d", data)
-            }
-            socket.send(identify.toString())
         } catch (e: Exception) {
-            val msg = "Discord RPC identify failed: ${e.localizedMessage ?: "Unknown error"}"
+            val detail = e.localizedMessage?.takeIf { it.isNotBlank() } ?: "Kizzy RPC failure"
+            val msg = "Discord RPC error: $detail"
             _connectionState.value = DiscordConnectionState.Error(msg)
             showRateLimitedToast(msg)
-        }
-    }
-
-    private fun sendPresenceInternal(payload: DiscordPresencePayload): Boolean {
-        val socket = webSocket ?: return false
-        return try {
-            val root = JSONObject().apply {
-                put("op", OP_PRESENCE_UPDATE)
-                put("d", buildPresenceData(payload))
-            }
-            socket.send(root.toString())
-        } catch (_: Exception) {
-            false
-        }
-    }
-
-    private fun sendClearPresenceInternal(): Boolean {
-        val socket = webSocket ?: return false
-        return try {
-            val data = JSONObject().apply {
-                put("since", JSONObject.NULL)
-                put("activities", JSONArray())
-                put("status", "online")
-                put("afk", false)
-            }
-            val root = JSONObject().apply {
-                put("op", OP_PRESENCE_UPDATE)
-                put("d", data)
-            }
-            socket.send(root.toString())
-        } catch (_: Exception) {
-            false
-        }
-    }
-
-    private fun buildPresenceData(payload: DiscordPresencePayload): JSONObject {
-        val activity = JSONObject().apply {
-            put("name", "Clotch")
-            put("type", 0) // Playing
-            put("details", payload.formatStatusText()) // e.g. "Recording Mobile Game at 60FPS"
-            put("state", payload.formatSubDetails())
-            if (payload.isRecording && !payload.isPaused && payload.startedAtEpochMs > 0L) {
-                put(
-                    "timestamps",
-                    JSONObject().apply { put("start", payload.startedAtEpochMs) }
-                )
-            }
-        }
-        return JSONObject().apply {
-            put("since", if (payload.startedAtEpochMs > 0L) payload.startedAtEpochMs else JSONObject.NULL)
-            put("activities", JSONArray().apply { put(activity) })
-            put("status", "online")
-            put("afk", false)
-        }
-    }
-
-    private fun scheduleReconnect() {
-        if (userInitiatedDisconnect || activeToken.isBlank()) return
-        if (reconnectJob?.isActive == true) return
-        if (reconnectAttempt >= 4) return
-
-        val backoffMs = (2000L * (1 shl reconnectAttempt)).coerceAtMost(30_000L)
-        reconnectAttempt++
-        reconnectJob = scope.launch {
-            delay(backoffMs)
-            if (!userInitiatedDisconnect && isNetworkAvailable()) {
-                openWebSocket(showSuccessToast = false)
-            }
         }
     }
 

@@ -43,6 +43,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.R
 import com.example.data.ClotchSettings
+import com.example.discord.DetectedAppsResult
 import com.example.discord.DiscordConnectionState
 import com.example.discord.DiscordPresencePayload
 import com.example.discord.DiscordUserProfile
@@ -77,12 +78,16 @@ fun PresenceScreen(
     discordState: DiscordConnectionState,
     discordPresence: DiscordPresencePayload?,
     discordProfile: DiscordUserProfile,
+    detectedApps: DetectedAppsResult,
+    hasUsageStatsPermission: Boolean,
     isFetchingProfile: Boolean,
     onGameNameChanged: (String) -> Unit,
     onOpenSignInDialog: () -> Unit,
     onSignOutDiscord: () -> Unit,
     onConnectRpc: () -> Unit,
     onDisconnectRpc: () -> Unit,
+    onRequestUsageAccess: () -> Unit,
+    onScanAppsNow: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val scrollState = rememberScrollState()
@@ -114,7 +119,7 @@ fun PresenceScreen(
                 textAlign = TextAlign.Center
             )
 
-            // Reference Image 4 Status Card
+            // Status Card
             Surface(
                 modifier = Modifier.fillMaxWidth(),
                 color = SlateCard,
@@ -137,12 +142,12 @@ fun PresenceScreen(
                             is DiscordConnectionState.Connected -> Triple(
                                 "Connected to Discord",
                                 SignalEmerald,
-                                "Runs in the background"
+                                "Kizzy RPC runs in the background"
                             )
                             DiscordConnectionState.Connecting -> Triple(
                                 "Connecting to Discord",
                                 WarningAmber,
-                                "Handshaking with Gateway v10..."
+                                "Connecting via Kizzy RPC..."
                             )
                             is DiscordConnectionState.Error -> Triple(
                                 "Discord RPC Error",
@@ -155,7 +160,7 @@ fun PresenceScreen(
                                 if (settings.discordToken.isBlank()) {
                                     "Sign in below to sync live status"
                                 } else {
-                                    "Tap Connect to start RPC"
+                                    "Tap Connect to start Kizzy RPC"
                                 }
                             )
                         }
@@ -197,7 +202,7 @@ fun PresenceScreen(
                 textAlign = TextAlign.Center
             )
 
-            // Reference Image 4 Current Activity (Preview) Card
+            // Current Activity (Preview) Card
             Surface(
                 modifier = Modifier.fillMaxWidth(),
                 color = SlateCard,
@@ -221,20 +226,20 @@ fun PresenceScreen(
                         modifier = Modifier.weight(1f),
                         verticalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
-                        val activePayload = discordPresence
-                        val activityTitle = if (isRecordingOrPaused && activePayload != null) {
-                            activePayload.formatStatusText()
-                        } else {
-                            "Idle"
-                        }
-                        val activitySubtitle = if (isRecordingOrPaused && activePayload != null) {
-                            activePayload.formatSubDetails()
-                        } else {
-                            "No supported app detected"
-                        }
+                        val previewPayload = discordPresence ?: DiscordPresencePayload(
+                            isRecording = isRecordingOrPaused,
+                            isPaused = recorderState is RecorderState.Paused,
+                            gameName = settings.gameName,
+                            fps = settings.fps.fps,
+                            resolutionLabel = settings.resolution.shortLabel,
+                            bitrateMbps = settings.bitrate.mbps,
+                            detectedAppName = detectedApps.activeGame?.displayName,
+                            detectedAppPackage = detectedApps.activeGame?.packageName,
+                            isLarkPlayerRunning = detectedApps.isLarkPlayerRunning
+                        )
 
                         Text(
-                            text = activityTitle,
+                            text = previewPayload.formatStatusText(),
                             style = MaterialTheme.typography.titleLarge,
                             fontSize = 20.sp,
                             fontWeight = FontWeight.Bold,
@@ -243,7 +248,7 @@ fun PresenceScreen(
                             overflow = TextOverflow.Ellipsis
                         )
                         Text(
-                            text = activitySubtitle,
+                            text = previewPayload.formatSubDetails(),
                             style = MaterialTheme.typography.bodyMedium,
                             color = TextSecondary,
                             maxLines = 2,
@@ -253,7 +258,7 @@ fun PresenceScreen(
                 }
             }
 
-            // Game Name & Quick RPC Controls Card
+            // App Detection & Game Name Card
             Surface(
                 modifier = Modifier.fillMaxWidth(),
                 color = SlateCard,
@@ -266,10 +271,48 @@ fun PresenceScreen(
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     Text(
-                        text = "Status Game Title",
+                        text = "App Detection & Status Title",
                         style = MaterialTheme.typography.titleSmall,
                         color = TextPrimary
                     )
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        if (!hasUsageStatsPermission) {
+                            Button(
+                                onClick = onRequestUsageAccess,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(48.dp)
+                                    .testTag("grant_usage_access_button"),
+                                shape = RoundedCornerShape(12.dp),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = ClotchBlue,
+                                    contentColor = TextPrimary
+                                )
+                            ) {
+                                Text("Grant Usage Access")
+                            }
+                        } else {
+                            OutlinedButton(
+                                onClick = onScanAppsNow,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(48.dp)
+                                    .testTag("scan_apps_button"),
+                                shape = RoundedCornerShape(12.dp),
+                                border = BorderStroke(1.dp, HairlineBorder),
+                                colors = ButtonDefaults.outlinedButtonColors(
+                                    containerColor = ElevatedSlate,
+                                    contentColor = TextPrimary
+                                )
+                            ) {
+                                Text("Scan Recent Apps & Lark")
+                            }
+                        }
+                    }
 
                     OutlinedTextField(
                         value = localGameName,
@@ -277,7 +320,7 @@ fun PresenceScreen(
                             localGameName = updated
                             onGameNameChanged(updated)
                         },
-                        label = { Text("Game Name") },
+                        label = { Text("Fallback Game Name") },
                         placeholder = { Text("Mobile Game") },
                         singleLine = true,
                         modifier = Modifier
@@ -326,41 +369,36 @@ fun PresenceScreen(
                     }
 
                     if (settings.discordToken.isNotBlank()) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(10.dp)
-                        ) {
-                            if (discordState is DiscordConnectionState.Connected) {
-                                OutlinedButton(
-                                    onClick = onDisconnectRpc,
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .height(48.dp)
-                                        .testTag("discord_connect_button"),
-                                    shape = RoundedCornerShape(12.dp),
-                                    border = BorderStroke(1.dp, HairlineBorder),
-                                    colors = ButtonDefaults.outlinedButtonColors(
-                                        containerColor = ElevatedSlate,
-                                        contentColor = TextPrimary
-                                    )
-                                ) {
-                                    Text("Disconnect Gateway RPC")
-                                }
-                            } else {
-                                Button(
-                                    onClick = onConnectRpc,
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .height(48.dp)
-                                        .testTag("discord_connect_button"),
-                                    shape = RoundedCornerShape(12.dp),
-                                    colors = ButtonDefaults.buttonColors(
-                                        containerColor = DiscordBlurple,
-                                        contentColor = TextPrimary
-                                    )
-                                ) {
-                                    Text("Connect Gateway RPC")
-                                }
+                        if (discordState is DiscordConnectionState.Connected) {
+                            OutlinedButton(
+                                onClick = onDisconnectRpc,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(48.dp)
+                                    .testTag("discord_connect_button"),
+                                shape = RoundedCornerShape(12.dp),
+                                border = BorderStroke(1.dp, HairlineBorder),
+                                colors = ButtonDefaults.outlinedButtonColors(
+                                    containerColor = ElevatedSlate,
+                                    contentColor = TextPrimary
+                                )
+                            ) {
+                                Text("Disconnect Kizzy RPC")
+                            }
+                        } else {
+                            Button(
+                                onClick = onConnectRpc,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(48.dp)
+                                    .testTag("discord_connect_button"),
+                                shape = RoundedCornerShape(12.dp),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = DiscordBlurple,
+                                    contentColor = TextPrimary
+                                )
+                            ) {
+                                Text("Connect Kizzy RPC")
                             }
                         }
                     }

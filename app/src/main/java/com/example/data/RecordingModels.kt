@@ -42,18 +42,40 @@ enum class CountdownOption(val seconds: Int, val label: String) {
     FIVE(5, "5s")
 }
 
+enum class VideoFormat(
+    val label: String,
+    val extension: String,
+    val mimeType: String
+) {
+    MP4("MP4", "mp4", "video/mp4"),
+    MKV("MKV", "mkv", "video/x-matroska"),
+    THREE_GPP("3GPP", "3gp", "video/3gpp")
+}
+
+enum class RecordingMode(val label: String) {
+    AUDIO_AND_VIDEO("Audio + Video"),
+    VIDEO_ONLY("Video Only")
+}
+
 data class ClotchSettings(
     val resolution: VideoResolution = VideoResolution.FHD_1080P,
     val fps: FrameRateOption = FrameRateOption.FPS_60,
     val bitrate: BitrateOption = BitrateOption.MBPS_20,
     val orientation: OrientationOption = OrientationOption.AUTO,
     val countdown: CountdownOption = CountdownOption.OFF,
-    val recordMicAudio: Boolean = false,
+    val videoFormat: VideoFormat = VideoFormat.MP4,
+    val recordingMode: RecordingMode = RecordingMode.AUDIO_AND_VIDEO,
+    val recordAudioSeparately: Boolean = false,
+    val recordMicAudio: Boolean = true,
     val showQuickNotification: Boolean = true,
     val gameName: String = "Mobile Game",
     val discordRpcEnabled: Boolean = true,
     val discordToken: String = ""
-)
+) {
+    val needsMicPermission: Boolean
+        get() = recordingMode == RecordingMode.AUDIO_AND_VIDEO ||
+            (recordingMode == RecordingMode.VIDEO_ONLY && recordAudioSeparately)
+}
 
 data class RecordedClip(
     val id: Long,
@@ -64,5 +86,6 @@ data class RecordedClip(
     val width: Int,
     val height: Int,
     val dateAddedSec: Long,
+    val mimeType: String = "video/mp4",
     val isFileUri: Boolean = false
 )

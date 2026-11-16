@@ -19,6 +19,8 @@ import com.example.data.ClipsRepository
 import com.example.data.ClotchSettings
 import com.example.data.RecordedClip
 import com.example.data.SettingsRepository
+import com.example.discord.AppDetectionMonitor
+import com.example.discord.DetectedAppsResult
 import com.example.discord.DiscordConnectionState
 import com.example.discord.DiscordPresencePayload
 import com.example.discord.DiscordRpcClient
@@ -32,7 +34,9 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class RecordingController(private val context: Context) {
 
@@ -41,7 +45,6 @@ class RecordingController(private val context: Context) {
         const val NOTIFICATION_ID = 1001
         const val IDLE_NOTIFICATION_ID = 1002
         const val ACTION_QUICK_START = "com.example.action.QUICK_START"
-        const val ACTION_DISMISS_HUD = "com.example.action.DISMISS_HUD"
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
@@ -64,16 +67,25 @@ class RecordingController(private val context: Context) {
     private val _clips = MutableStateFlow<List<RecordedClip>>(emptyList())
     val clips: StateFlow<List<RecordedClip>> = _clips.asStateFlow()
 
+    private val _detectedApps = MutableStateFlow(DetectedAppsResult())
+    val detectedApps: StateFlow<DetectedAppsResult> = _detectedApps.asStateFlow()
+
+    private val _hasUsageStatsPermission =
+        MutableStateFlow(AppDetectionMonitor.hasUsageStatsPermission(context))
+    val hasUsageStatsPermission: StateFlow<Boolean> = _hasUsageStatsPermission.asStateFlow()
+
     val discordConnectionState: StateFlow<DiscordConnectionState> =
         discordRpcClient.connectionState
     val discordPresence: StateFlow<DiscordPresencePayload?> =
         discordRpcClient.currentPresence
 
     private var countdownJob: Job? = null
+    private var appDetectionJob: Job? = null
 
     init {
         ensureNotificationChannel()
         refreshClips()
+        startAppDetectionLoop()
     }
 
     fun ensureNotificationChannel() {
@@ -91,6 +103,138 @@ class RecordingController(private val context: Context) {
                 manager.createNotificationChannel(channel)
             }
         }
+    }
+
+    fun refreshUsageStatsPermission(): Boolean {
+        val granted = AppDetectionMonitor.hasUsageStatsPermission(context)
+        _hasUsageStatsPermission.value = granted
+        return granted
+    }
+
+    fun scanAppsNow(showFeedbackToast: Boolean = false) {
+        scope.launch {
+            val hasPerm = refreshUsageStatsPermission()
+            if (!hasPerm) {
+                if (showFeedbackToast) {
+                    showToast("Grant Usage Access permission to detect games & Lark Player")
+                }
+                return@launch
+            }
+            val result = withContext(Dispatchers.IO) {
+                AppDetectionMonitor.scanRecentApps(context)
+            }
+            val prev = _detectedApps.value
+            _detectedApps.value = result
+            val changed = prev.activeGame?.packageName != result.activeGame?.packageName ||
+                prev.isLarkPlayerRunning != result.isLarkPlayerRunning
+
+            if (changed || showFeedbackToast) {
+                pushCompositePresence()
+            }
+            if (showFeedbackToast) {
+                val msg = when {
+                    result.activeGame != null && result.isLarkPlayerRunning ->
+                        "Detected ${result.activeGame.displayName} + Lark Player"
+                    result.activeGame != null ->
+                        "Detected ${result.activeGame.displayName}"
+                    result.isLarkPlayerRunning ->
+                        "Detected Lark Player in background"
+                    else ->
+                        "No supported game or Lark Player detected in recents"
+                }
+                showToast(msg)
+            }
+        }
+    }
+
+    private fun startAppDetectionLoop() {
+        appDetectionJob?.cancel()
+        appDetectionJob = scope.launch {
+            while (isActive) {
+                if (refreshUsageStatsPermission()) {
+                    val result = withContext(Dispatchers.IO) {
+                        AppDetectionMonitor.scanRecentApps(context)
+                    }
+                    val prev = _detectedApps.value
+                    _detectedApps.value = result
+                    val changed = prev.activeGame?.packageName != result.activeGame?.packageName ||
+                        prev.isLarkPlayerRunning != result.isLarkPlayerRunning
+                    if (changed) {
+                        pushCompositePresence()
+                    }
+                }
+                delay(5_000L)
+            }
+        }
+    }
+
+    fun pushCompositePresence() {
+        val currentSettings = settings.value
+        val detected = _detectedApps.value
+        val recState = _recorderState.value
+
+        val isRec = recState is RecorderState.Recording
+        val isPaused = recState is RecorderState.Paused
+
+        if (!isRec && !isPaused && !detected.hasAnyDetectedApp) {
+            // Only clear if nothing is detected and not recording
+            if (discordPresence.value != null) {
+                discordRpcClient.updatePresence(
+                    payload = null,
+                    rpcEnabled = currentSettings.discordRpcEnabled,
+                    token = currentSettings.discordToken
+                )
+            }
+            return
+        }
+
+        val activeFps = when (recState) {
+            is RecorderState.Recording -> recState.activeFps
+            is RecorderState.Paused -> recState.activeFps
+            else -> currentSettings.fps.fps
+        }
+        val activeRes = when (recState) {
+            is RecorderState.Recording -> "${minOf(recState.activeWidth, recState.activeHeight)}p"
+            is RecorderState.Paused -> "${minOf(recState.activeWidth, recState.activeHeight)}p"
+            else -> currentSettings.resolution.shortLabel
+        }
+        val activeBitrate = when (recState) {
+            is RecorderState.Recording -> recState.activeBitrateMbps
+            is RecorderState.Paused -> recState.activeBitrateMbps
+            else -> currentSettings.bitrate.mbps
+        }
+
+        val largeImage = when {
+            detected.activeGame != null -> detected.activeGame.catImageUrl
+            detected.isLarkPlayerRunning -> DetectedAppsResult.LARK_CAT_IMAGE_URL
+            else -> "https://example.com/cat_clotch.png"
+        }
+        val smallImage = if (detected.activeGame != null && detected.isLarkPlayerRunning) {
+            DetectedAppsResult.LARK_CAT_IMAGE_URL
+        } else {
+            null
+        }
+
+        val payload = DiscordPresencePayload(
+            isRecording = isRec || isPaused,
+            isPaused = isPaused,
+            gameName = currentSettings.gameName,
+            fps = activeFps,
+            resolutionLabel = activeRes,
+            bitrateMbps = activeBitrate,
+            startedAtEpochMs = if (isRec) System.currentTimeMillis() else 0L,
+            detectedAppName = detected.activeGame?.displayName,
+            detectedAppPackage = detected.activeGame?.packageName,
+            isLarkPlayerRunning = detected.isLarkPlayerRunning,
+            largeImageUrl = largeImage,
+            smallImageUrl = smallImage
+        )
+
+        discordRpcClient.updatePresence(
+            payload = payload,
+            rpcEnabled = currentSettings.discordRpcEnabled,
+            token = currentSettings.discordToken
+        )
     }
 
     fun syncIdleNotification(currentSettings: ClotchSettings = settings.value) {
@@ -136,8 +280,10 @@ class RecordingController(private val context: Context) {
 
         val notification = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.presence_video_online)
-            .setContentTitle("Clotch Ready • ${currentSettings.resolution.shortLabel} ${currentSettings.fps.fps}FPS")
-            .setContentText("Tap Start to capture ${currentSettings.gameName} (${currentSettings.bitrate.label})")
+            .setContentTitle(
+                "Clotch Ready • ${currentSettings.resolution.shortLabel} ${currentSettings.fps.fps}FPS (${currentSettings.videoFormat.label})"
+            )
+            .setContentText("Tap Start to capture ${currentSettings.gameName}")
             .setOngoing(true)
             .setSilent(true)
             .setContentIntent(openPending)
@@ -230,22 +376,7 @@ class RecordingController(private val context: Context) {
             activeFps = fps,
             activeBitrateMbps = bitrateMbps
         )
-
-        val currentSettings = settings.value
-        val payload = DiscordPresencePayload(
-            isRecording = true,
-            isPaused = false,
-            gameName = currentSettings.gameName,
-            fps = fps,
-            resolutionLabel = "${minOf(width, height)}p",
-            bitrateMbps = bitrateMbps,
-            startedAtEpochMs = System.currentTimeMillis()
-        )
-        discordRpcClient.updatePresence(
-            payload = payload,
-            rpcEnabled = currentSettings.discordRpcEnabled,
-            token = currentSettings.discordToken
-        )
+        pushCompositePresence()
     }
 
     fun onServiceRecordingTick(elapsedMs: Long) {
@@ -266,21 +397,7 @@ class RecordingController(private val context: Context) {
                 activeFps = current.activeFps,
                 activeBitrateMbps = current.activeBitrateMbps
             )
-            val currentSettings = settings.value
-            val payload = DiscordPresencePayload(
-                isRecording = true,
-                isPaused = true,
-                gameName = currentSettings.gameName,
-                fps = current.activeFps,
-                resolutionLabel = "${minOf(current.activeWidth, current.activeHeight)}p",
-                bitrateMbps = current.activeBitrateMbps,
-                startedAtEpochMs = 0L
-            )
-            discordRpcClient.updatePresence(
-                payload = payload,
-                rpcEnabled = currentSettings.discordRpcEnabled,
-                token = currentSettings.discordToken
-            )
+            pushCompositePresence()
         }
     }
 
@@ -296,47 +413,28 @@ class RecordingController(private val context: Context) {
                 activeFps = current.activeFps,
                 activeBitrateMbps = current.activeBitrateMbps
             )
-            val currentSettings = settings.value
-            val payload = DiscordPresencePayload(
-                isRecording = true,
-                isPaused = false,
-                gameName = currentSettings.gameName,
-                fps = current.activeFps,
-                resolutionLabel = "${minOf(current.activeWidth, current.activeHeight)}p",
-                bitrateMbps = current.activeBitrateMbps,
-                startedAtEpochMs = System.currentTimeMillis() - current.elapsedMs
-            )
-            discordRpcClient.updatePresence(
-                payload = payload,
-                rpcEnabled = currentSettings.discordRpcEnabled,
-                token = currentSettings.discordToken
-            )
+            pushCompositePresence()
         }
     }
 
-    fun onServiceRecordingStopped(savedFileName: String?) {
+    fun onServiceRecordingStopped(savedFileName: String?, audioFileName: String? = null) {
         _recorderState.value = RecorderState.Idle
-        val currentSettings = settings.value
-        discordRpcClient.updatePresence(
-            payload = null,
-            rpcEnabled = currentSettings.discordRpcEnabled,
-            token = currentSettings.discordToken
-        )
+        pushCompositePresence()
         refreshClips()
-        syncIdleNotification(currentSettings)
+        syncIdleNotification(settings.value)
         if (!savedFileName.isNullOrBlank()) {
-            showToast("Saved clip: $savedFileName")
+            val msg = if (!audioFileName.isNullOrBlank()) {
+                "Saved $savedFileName + audio $audioFileName"
+            } else {
+                "Saved Movies/Clotch/$savedFileName"
+            }
+            showToast(msg)
         }
     }
 
     fun onServiceError(message: String) {
         _recorderState.value = RecorderState.Error(message)
-        val currentSettings = settings.value
-        discordRpcClient.updatePresence(
-            payload = null,
-            rpcEnabled = currentSettings.discordRpcEnabled,
-            token = currentSettings.discordToken
-        )
+        pushCompositePresence()
         showToast(message)
         scope.launch {
             delay(3000L)
@@ -368,6 +466,7 @@ class RecordingController(private val context: Context) {
     fun connectDiscordRpc(tokenOverride: String? = null) {
         val token = tokenOverride ?: settings.value.discordToken
         discordRpcClient.connect(token, showSuccessToast = true)
+        pushCompositePresence()
     }
 
     fun disconnectDiscordRpc() {

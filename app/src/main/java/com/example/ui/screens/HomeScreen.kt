@@ -30,7 +30,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
@@ -170,7 +169,7 @@ fun HomeScreen(
                     }
                 }
 
-                // Right Card: Recording
+                // Right Card: Recording (same vibrant ClotchBlue accent as Presence)
                 Surface(
                     modifier = Modifier
                         .weight(1f)
@@ -210,7 +209,7 @@ fun HomeScreen(
                                 tint = when {
                                     isRecording -> CrimsonAccent
                                     isPaused -> WarningAmber
-                                    else -> Color(0xFFB4BED1)
+                                    else -> ClotchBlue
                                 },
                                 modifier = Modifier.size(32.dp)
                             )
@@ -224,7 +223,7 @@ fun HomeScreen(
                                 text = when {
                                     isRecording -> "Live • ${settings.fps.fps}FPS"
                                     isPaused -> "Paused"
-                                    else -> "${settings.resolution.shortLabel} • ${settings.fps.fps}FPS"
+                                    else -> "${settings.resolution.shortLabel} • ${settings.videoFormat.label}"
                                 },
                                 style = MaterialTheme.typography.bodySmall,
                                 color = if (isRecording) CrimsonAccent else TextSecondary

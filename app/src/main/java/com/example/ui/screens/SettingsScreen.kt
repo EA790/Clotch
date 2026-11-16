@@ -1,6 +1,8 @@
 package com.example.ui.screens
 
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -27,9 +29,15 @@ import androidx.compose.material.icons.outlined.Notifications
 import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExposedDropdownMenuBox
+import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.MenuAnchorType
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
@@ -56,6 +64,8 @@ import com.example.data.ClotchSettings
 import com.example.data.CountdownOption
 import com.example.data.FrameRateOption
 import com.example.data.OrientationOption
+import com.example.data.RecordingMode
+import com.example.data.VideoFormat
 import com.example.data.VideoResolution
 import com.example.discord.DiscordConnectionState
 import com.example.discord.DiscordUserProfile
@@ -73,19 +83,22 @@ import com.example.ui.theme.TextMuted
 import com.example.ui.theme.TextPrimary
 import com.example.ui.theme.TextSecondary
 
-@OptIn(ExperimentalLayoutApi::class)
+@OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(
     settings: ClotchSettings,
     discordState: DiscordConnectionState,
     discordProfile: DiscordUserProfile,
+    hasUsageStatsPermission: Boolean,
     isFetchingProfile: Boolean,
     onSelectResolution: (VideoResolution) -> Unit,
     onSelectFps: (FrameRateOption) -> Unit,
     onSelectBitrate: (BitrateOption) -> Unit,
     onSelectOrientation: (OrientationOption) -> Unit,
+    onSelectVideoFormat: (VideoFormat) -> Unit,
+    onSelectRecordingMode: (RecordingMode) -> Unit,
+    onToggleRecordAudioSeparately: (Boolean) -> Unit,
     onSelectCountdown: (CountdownOption) -> Unit,
-    onToggleMicAudio: (Boolean) -> Unit,
     onToggleQuickNotification: (Boolean) -> Unit,
     onToggleDiscordRpc: (Boolean) -> Unit,
     onGameNameChanged: (String) -> Unit,
@@ -94,12 +107,15 @@ fun SettingsScreen(
     onDisconnectDiscord: () -> Unit,
     onOpenSignInDialog: () -> Unit,
     onSignOutDiscord: () -> Unit,
+    onRequestUsageAccess: () -> Unit,
+    onScanAppsNow: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val scrollState = rememberScrollState()
     var tokenInput by remember(settings.discordToken) { mutableStateOf(settings.discordToken) }
     var gameNameInput by remember(settings.gameName) { mutableStateOf(settings.gameName) }
     var showToken by remember { mutableStateOf(false) }
+    var formatDropdownExpanded by remember { mutableStateOf(false) }
 
     Column(
         modifier = modifier
@@ -120,7 +136,7 @@ fun SettingsScreen(
                     color = TextPrimary
                 )
                 Text(
-                    text = "Video capture encoder, notification controls & Discord account",
+                    text = "Video capture encoder, format, audio mode & Discord Kizzy RPC",
                     style = MaterialTheme.typography.bodySmall,
                     color = TextSecondary
                 )
@@ -139,6 +155,66 @@ fun SettingsScreen(
                 icon = Icons.Outlined.Tune,
                 accentColor = ClotchBlue
             ) {
+                OptionGroupLabel("Video Format")
+                ExposedDropdownMenuBox(
+                    expanded = formatDropdownExpanded,
+                    onExpandedChange = { formatDropdownExpanded = it },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    OutlinedTextField(
+                        value = when (settings.videoFormat) {
+                            VideoFormat.MP4 -> "MP4 (.mp4) — Native MediaRecorder"
+                            VideoFormat.MKV -> "MKV (.mkv) — FFmpeg Remux"
+                            VideoFormat.THREE_GPP -> "3GPP (.3gp) — Compact Mobile"
+                        },
+                        onValueChange = {},
+                        readOnly = true,
+                        singleLine = true,
+                        trailingIcon = {
+                            ExposedDropdownMenuDefaults.TrailingIcon(expanded = formatDropdownExpanded)
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .menuAnchor(MenuAnchorType.PrimaryNotEditable, enabled = true)
+                            .testTag("video_format_dropdown"),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = ClotchBlue,
+                            unfocusedBorderColor = HairlineBorder,
+                            focusedContainerColor = CarbonSurface,
+                            unfocusedContainerColor = CarbonSurface,
+                            focusedTextColor = TextPrimary,
+                            unfocusedTextColor = TextPrimary
+                        )
+                    )
+                    ExposedDropdownMenu(
+                        expanded = formatDropdownExpanded,
+                        onDismissRequest = { formatDropdownExpanded = false },
+                        modifier = Modifier.background(ElevatedSlate)
+                    ) {
+                        VideoFormat.entries.forEach { format ->
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        text = when (format) {
+                                            VideoFormat.MP4 -> "MP4 (.mp4) — Standard"
+                                            VideoFormat.MKV -> "MKV (.mkv) — FFmpeg Matroska"
+                                            VideoFormat.THREE_GPP -> "3GPP (.3gp) — Legacy 3GP"
+                                        },
+                                        color = TextPrimary
+                                    )
+                                },
+                                onClick = {
+                                    onSelectVideoFormat(format)
+                                    formatDropdownExpanded = false
+                                },
+                                modifier = Modifier.testTag("format_option_${format.name}")
+                            )
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(6.dp))
                 OptionGroupLabel("Resolution")
                 FlowRow(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -207,12 +283,51 @@ fun SettingsScreen(
                 }
             }
 
-            // Capture Controls Card
+            // Recording Mode & Capture Controls Card
             SettingsSectionCard(
-                title = "Capture Behavior",
-                icon = Icons.Outlined.Notifications,
+                title = "Recording Mode & Audio",
+                icon = Icons.Outlined.Mic,
                 accentColor = SignalEmerald
             ) {
+                OptionGroupLabel("Capture Mode")
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    RecordingMode.entries.forEach { mode ->
+                        OptionPill(
+                            label = mode.label,
+                            selected = settings.recordingMode == mode,
+                            accent = SignalEmerald,
+                            onClick = { onSelectRecordingMode(mode) },
+                            modifier = Modifier.testTag("recording_mode_${mode.name}")
+                        )
+                    }
+                }
+
+                AnimatedVisibility(visible = settings.recordingMode == RecordingMode.VIDEO_ONLY) {
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 6.dp),
+                        color = CarbonSurface,
+                        shape = RoundedCornerShape(12.dp),
+                        border = BorderStroke(1.dp, HairlineBorder)
+                    ) {
+                        Box(modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)) {
+                            SettingsToggleRow(
+                                icon = Icons.Outlined.Mic,
+                                title = "Record Audio Separately",
+                                subtitle = "Save separate .m4a mic track to Music/Clotch",
+                                checked = settings.recordAudioSeparately,
+                                onCheckedChange = onToggleRecordAudioSeparately,
+                                testTag = "settings_separate_audio_switch"
+                            )
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(6.dp))
                 OptionGroupLabel("Pre-Record Countdown")
                 FlowRow(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -229,16 +344,6 @@ fun SettingsScreen(
                     }
                 }
 
-                Spacer(modifier = Modifier.height(6.dp))
-                SettingsToggleRow(
-                    icon = Icons.Outlined.Mic,
-                    title = "Record Microphone Audio",
-                    subtitle = "Capture voice commentary alongside gameplay video",
-                    checked = settings.recordMicAudio,
-                    onCheckedChange = onToggleMicAudio,
-                    testTag = "settings_mic_switch"
-                )
-
                 SettingsToggleRow(
                     icon = Icons.Outlined.Notifications,
                     title = "Quick Notification Controls",
@@ -249,20 +354,58 @@ fun SettingsScreen(
                 )
             }
 
-            // Discord Rich Presence Card
+            // Discord Rich Presence & App Detection Card
             SettingsSectionCard(
-                title = "Discord Rich Presence",
+                title = "Kizzy Rich Presence & App Detection",
                 icon = Icons.Outlined.Hub,
                 accentColor = DiscordBlurple
             ) {
                 SettingsToggleRow(
                     icon = Icons.Outlined.Hub,
                     title = "Auto-Sync Discord Status",
-                    subtitle = "Updates status to 'Recording [Game] at ${settings.fps.fps}FPS'",
+                    subtitle = "Detects supported games, Lark Player & recording via Kizzy",
                     checked = settings.discordRpcEnabled,
                     onCheckedChange = onToggleDiscordRpc,
                     testTag = "settings_discord_switch"
                 )
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    if (!hasUsageStatsPermission) {
+                        Button(
+                            onClick = onRequestUsageAccess,
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(48.dp)
+                                .testTag("settings_usage_access_button"),
+                            shape = RoundedCornerShape(12.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = ClotchBlue,
+                                contentColor = TextPrimary
+                            )
+                        ) {
+                            Text("Grant Usage Access (Apps)")
+                        }
+                    } else {
+                        OutlinedButton(
+                            onClick = onScanAppsNow,
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(48.dp)
+                                .testTag("settings_scan_apps_button"),
+                            shape = RoundedCornerShape(12.dp),
+                            border = BorderStroke(1.dp, HairlineBorder),
+                            colors = ButtonDefaults.outlinedButtonColors(
+                                containerColor = CarbonSurface,
+                                contentColor = SignalEmerald
+                            )
+                        ) {
+                            Text("Usage Access Granted • Scan Apps")
+                        }
+                    }
+                }
 
                 OutlinedTextField(
                     value = gameNameInput,
@@ -270,7 +413,7 @@ fun SettingsScreen(
                         gameNameInput = it
                         onGameNameChanged(it)
                     },
-                    label = { Text("Default Game Title") },
+                    label = { Text("Fallback Game Title") },
                     placeholder = { Text("Mobile Game") },
                     singleLine = true,
                     modifier = Modifier
@@ -293,8 +436,8 @@ fun SettingsScreen(
                         tokenInput = it
                         onDiscordTokenChanged(it)
                     },
-                    label = { Text("Discord Gateway Token") },
-                    placeholder = { Text("Paste Discord Gateway token for live RPC") },
+                    label = { Text("Discord Account Token") },
+                    placeholder = { Text("Paste Discord token for Kizzy RPC") },
                     singleLine = true,
                     visualTransformation = if (showToken) {
                         VisualTransformation.None
@@ -328,7 +471,7 @@ fun SettingsScreen(
                 )
 
                 Text(
-                    text = "Uses lightweight Discord Gateway v10 WebSocket (wss://gateway.discord.gg). Failures are handled gracefully via Toast.",
+                    text = "Powered by KizzyRPC (dead8309/KizzyRPC) with UsageStatsManager game + Lark Player detection.",
                     style = MaterialTheme.typography.bodySmall,
                     color = TextMuted
                 )
@@ -353,7 +496,7 @@ fun SettingsScreen(
                             text = if (discordState is DiscordConnectionState.Connecting) {
                                 "Connecting..."
                             } else {
-                                "Connect & Test RPC"
+                                "Connect Kizzy RPC"
                             },
                             style = MaterialTheme.typography.labelLarge
                         )
