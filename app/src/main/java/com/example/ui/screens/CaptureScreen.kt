@@ -91,7 +91,6 @@ fun CaptureScreen(
     val scrollState = rememberScrollState()
     val isRecording = recorderState is RecorderState.Recording
     val isPaused = recorderState is RecorderState.Paused
-    val isCountdown = recorderState is RecorderState.Countdown
 
     val infiniteTransition = rememberInfiniteTransition(label = "rec_pulse")
     val pulseAlpha by infiniteTransition.animateFloat(
@@ -306,7 +305,7 @@ fun CaptureScreen(
                                 }
                             }
 
-                            isCountdown -> {
+                            recorderState is RecorderState.Countdown -> {
                                 OutlinedButton(
                                     onClick = onCancelCountdown,
                                     modifier = Modifier
