@@ -24,6 +24,7 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
@@ -34,6 +35,7 @@ import androidx.compose.material.icons.automirrored.filled.FormatListBulleted
 import androidx.compose.material.icons.filled.FiberManualRecord
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.MovieCreation
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.VideoLibrary
 import androidx.compose.material3.DrawerValue
@@ -44,6 +46,9 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.ModalNavigationDrawer
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.NavigationDrawerItem
 import androidx.compose.material3.NavigationDrawerItemDefaults
 import androidx.compose.material3.Scaffold
@@ -86,8 +91,10 @@ import androidx.navigation.compose.rememberNavController
 import coil.compose.AsyncImage
 import com.example.R
 import com.example.data.RecordingMode
+import com.example.editor.EditorViewModel
 import com.example.recording.RecorderState
 import com.example.ui.components.DiscordSignInDialog
+import com.example.ui.editor.EditorScreen
 import com.example.ui.screens.CaptureScreen
 import com.example.ui.screens.ClipsScreen
 import com.example.ui.screens.HomeScreen
@@ -111,7 +118,8 @@ enum class ClotchRoute(
 ) {
     Home("home", "Home", Icons.Filled.Home),
     Presence("presence", "Presence", Icons.AutoMirrored.Filled.FormatListBulleted),
-    Recording("recording", "Recording", Icons.Filled.FiberManualRecord),
+    Recording("recording", "Record", Icons.Filled.FiberManualRecord),
+    Editor("editor", "Editor", Icons.Filled.MovieCreation),
     Clips("clips", "Clips", Icons.Filled.VideoLibrary),
     Settings("settings", "Settings", Icons.Filled.Settings)
 }
@@ -122,7 +130,8 @@ fun ClotchApp(
     quickStartTriggerCount: Int = 0,
     oauthAccessToken: String? = null,
     onOAuthTokenConsumed: () -> Unit = {},
-    viewModel: ClotchViewModel = viewModel()
+    viewModel: ClotchViewModel = viewModel(),
+    editorViewModel: EditorViewModel = viewModel()
 ) {
     val context = LocalContext.current
     val navController = rememberNavController()
@@ -236,6 +245,9 @@ fun ClotchApp(
     }
 
     fun navigateTo(route: ClotchRoute) {
+        if (currentRoute == ClotchRoute.Editor.route && route != ClotchRoute.Editor) {
+            editorViewModel.pausePlayback()
+        }
         navController.navigate(route.route) {
             popUpTo(navController.graph.findStartDestination().id) { saveState = true }
             launchSingleTop = true
@@ -468,6 +480,53 @@ fun ClotchApp(
                         navigationIconContentColor = TextPrimary
                     )
                 )
+            },
+            bottomBar = {
+                val primaryTabs = listOf(
+                    ClotchRoute.Home,
+                    ClotchRoute.Recording,
+                    ClotchRoute.Editor,
+                    ClotchRoute.Clips,
+                    ClotchRoute.Settings
+                )
+                Column {
+                    HorizontalDivider(color = HairlineBorder)
+                    NavigationBar(
+                        containerColor = CarbonSurface,
+                        contentColor = TextPrimary,
+                        windowInsets = WindowInsets.navigationBars,
+                        tonalElevation = 0.dp
+                    ) {
+                        primaryTabs.forEach { dest ->
+                            val selected = currentRoute == dest.route
+                            NavigationBarItem(
+                                selected = selected,
+                                onClick = { navigateTo(dest) },
+                                icon = {
+                                    Icon(
+                                        imageVector = dest.icon,
+                                        contentDescription = dest.label
+                                    )
+                                },
+                                label = {
+                                    Text(
+                                        text = dest.label,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                },
+                                modifier = Modifier.testTag("bottom_nav_${dest.route}"),
+                                colors = NavigationBarItemDefaults.colors(
+                                    selectedIconColor = ClotchBlue,
+                                    selectedTextColor = TextPrimary,
+                                    indicatorColor = ClotchBlueMuted,
+                                    unselectedIconColor = TextSecondary,
+                                    unselectedTextColor = TextSecondary
+                                )
+                            )
+                        }
+                    }
+                }
             }
         ) { innerPadding ->
             NavHost(
@@ -542,11 +601,26 @@ fun ClotchApp(
                     )
                 }
 
+                composable(ClotchRoute.Editor.route) {
+                    EditorScreen(
+                        editorViewModel = editorViewModel,
+                        savedClips = clips,
+                        onNavigateToClips = {
+                            viewModel.refreshClips()
+                            navigateTo(ClotchRoute.Clips)
+                        }
+                    )
+                }
+
                 composable(ClotchRoute.Clips.route) {
                     ClipsScreen(
                         clips = clips,
                         onRefreshClips = { viewModel.refreshClips() },
                         onDeleteClip = { viewModel.deleteClip(it) },
+                        onEditClip = { clip ->
+                            editorViewModel.openRecordedClip(clip)
+                            navigateTo(ClotchRoute.Editor)
+                        },
                         onShowMessage = { viewModel.showToast(it) }
                     )
                 }

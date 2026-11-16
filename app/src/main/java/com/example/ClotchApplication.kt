@@ -1,6 +1,7 @@
 package com.example
 
 import android.app.Application
+import com.example.diagnostics.CrashLogger
 import com.example.recording.RecordingController
 
 class ClotchApplication : Application() {
@@ -9,6 +10,7 @@ class ClotchApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        CrashLogger.install(this)
         recordingController = RecordingController(this)
     }
 }

@@ -94,6 +94,11 @@ dependencies {
   implementation("com.squareup.okhttp3:okhttp:4.10.0")
   implementation("com.github.dead8309:KizzyRPC:1.0.71")
   implementation("dev.ffmpegkit-maintained:ffmpeg-kit-full:8.1.7")
+  implementation("androidx.media3:media3-exoplayer:1.6.1")
+  implementation("androidx.media3:media3-transformer:1.6.1")
+  implementation("androidx.media3:media3-effect:1.6.1")
+  implementation("androidx.media3:media3-common:1.6.1")
+  implementation("androidx.media3:media3-ui:1.6.1")
 
   testImplementation(platform("androidx.compose:compose-bom:2024.09.00"))
   testImplementation("androidx.compose.ui:ui-test-junit4")

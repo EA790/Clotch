@@ -29,6 +29,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Movie
+import androidx.compose.material.icons.filled.MovieCreation
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Share
@@ -85,6 +86,7 @@ fun ClipsScreen(
     onRefreshClips: () -> Unit,
     onDeleteClip: (RecordedClip) -> Unit,
     onShowMessage: (String) -> Unit,
+    onEditClip: (RecordedClip) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -176,6 +178,7 @@ fun ClipsScreen(
                                     onShowMessage("Unable to share clip")
                                 }
                             },
+                            onEdit = { onEditClip(clip) },
                             onDelete = { clipPendingDelete = clip }
                         )
                     }
@@ -268,6 +271,7 @@ private fun ClipItemCard(
     clip: RecordedClip,
     onPlay: () -> Unit,
     onShare: () -> Unit,
+    onEdit: () -> Unit,
     onDelete: () -> Unit
 ) {
     val context = LocalContext.current
@@ -402,6 +406,22 @@ private fun ClipItemCard(
                     )
                     Spacer(modifier = Modifier.width(6.dp))
                     Text("Play", style = MaterialTheme.typography.labelLarge)
+                }
+
+                OutlinedButton(
+                    onClick = onEdit,
+                    modifier = Modifier
+                        .height(48.dp)
+                        .testTag("edit_clip_${clip.id}"),
+                    shape = RoundedCornerShape(12.dp),
+                    border = BorderStroke(1.dp, ClotchBlue.copy(alpha = 0.45f))
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.MovieCreation,
+                        contentDescription = "Edit clip",
+                        tint = ClotchBlue,
+                        modifier = Modifier.size(18.dp)
+                    )
                 }
 
                 OutlinedButton(

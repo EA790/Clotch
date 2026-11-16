@@ -1,0 +1,652 @@
+package com.example.ui.editor
+
+import android.graphics.Bitmap
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.GraphicEq
+import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.MusicNote
+import androidx.compose.material.icons.filled.VolumeOff
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.produceState
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.zIndex
+import com.example.editor.engine.EditorThumbnailCache
+import com.example.editor.model.AudioClipKind
+import com.example.editor.model.EditorProject
+import com.example.editor.model.TimelineAudioClip
+import com.example.editor.model.TimelineVideoClip
+import com.example.ui.theme.CarbonSurface
+import com.example.ui.theme.ClotchBlue
+import com.example.ui.theme.ClotchBlueMuted
+import com.example.ui.theme.CrimsonAccent
+import com.example.ui.theme.CrimsonGlow
+import com.example.ui.theme.ElevatedSlate
+import com.example.ui.theme.HairlineBorder
+import com.example.ui.theme.JetBrainsMonoFamily
+import com.example.ui.theme.ObsidianBg
+import com.example.ui.theme.SignalEmerald
+import com.example.ui.theme.SignalEmeraldMuted
+import com.example.ui.theme.SlateCard
+import com.example.ui.theme.TextMuted
+import com.example.ui.theme.TextPrimary
+import com.example.ui.theme.TextSecondary
+import java.util.Locale
+import kotlin.math.roundToInt
+import kotlin.math.roundToLong
+
+@Composable
+fun TimelineCanvas(
+    project: EditorProject,
+    thumbnailCache: EditorThumbnailCache,
+    isPlaying: Boolean,
+    onSeekTo: (Long) -> Unit,
+    onSelectVideoClip: (String?) -> Unit,
+    onSelectAudioClip: (String?) -> Unit,
+    onBeginContinuousEdit: () -> Unit,
+    onCommitContinuousEdit: () -> Unit,
+    onTrimVideoClip: (clipId: String, newStartMs: Long, newEndMs: Long) -> Unit,
+    onMoveVideoClip: (fromIndex: Int, toIndex: Int) -> Unit,
+    onMoveAudioClipStart: (audioId: String, newStartMs: Long) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val density = LocalDensity.current
+    val scrollState = rememberScrollState()
+    val pxPerSecond = 64f * project.zoomLevel
+    val dpPerMs = pxPerSecond / 1000f
+    val pxPerMs = with(density) { pxPerSecond.dp.toPx() } / 1000f
+
+    val totalMs = project.totalTimelineDurationMs.coerceAtLeast(10_000L)
+    val contentWidthDp: Dp = ((totalMs * dpPerMs) + 160f).dp
+    val playheadOffsetDp: Dp = (project.playheadMs * dpPerMs).dp
+    val latestTotalDuration by rememberUpdatedState(project.totalTimelineDurationMs.coerceAtLeast(1000L))
+
+    // Auto-scroll gently while playing if playhead approaches right edge
+    LaunchedEffect(project.playheadMs, isPlaying) {
+        if (isPlaying) {
+            val targetPx = (project.playheadMs * pxPerMs).roundToInt()
+            val viewport = scrollState.viewportSize
+            if (viewport > 0 && targetPx > scrollState.value + viewport - 120) {
+                scrollState.scrollTo((targetPx - viewport / 3).coerceAtLeast(0))
+            }
+        }
+    }
+
+    Surface(
+        modifier = modifier
+            .fillMaxWidth()
+            .testTag("timeline_canvas"),
+        color = CarbonSurface,
+        shape = RoundedCornerShape(16.dp),
+        border = BorderStroke(1.dp, HairlineBorder)
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(scrollState)
+                .padding(vertical = 8.dp)
+        ) {
+            Box(modifier = Modifier.width(contentWidthDp)) {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    // Time Ruler (Tap or drag to scrub playhead)
+                    TimelineRuler(
+                        totalMs = totalMs,
+                        zoomLevel = project.zoomLevel,
+                        dpPerMs = dpPerMs,
+                        pxPerMs = pxPerMs,
+                        maxSeekMs = latestTotalDuration,
+                        onSeekTo = onSeekTo,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(28.dp)
+                    )
+
+                    // Video Track Header + Clips
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Text(
+                            text = "VIDEO TRACK",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = TextMuted
+                        )
+
+                        if (project.videoClips.isEmpty()) {
+                            Box(
+                                modifier = Modifier
+                                    .width(240.dp)
+                                    .height(72.dp)
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(SlateCard)
+                                    .border(1.dp, HairlineBorder, RoundedCornerShape(10.dp)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = "Import a video or saved clip",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = TextMuted
+                                )
+                            }
+                        } else {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(76.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                project.videoClips.forEachIndexed { index, clip ->
+                                    val clipWidthDp = (clip.effectiveDurationMs * dpPerMs).dp.coerceAtLeast(64.dp)
+                                    VideoTrackClipItem(
+                                        clip = clip,
+                                        index = index,
+                                        totalClips = project.videoClips.size,
+                                        widthDp = clipWidthDp,
+                                        pxPerMs = pxPerMs,
+                                        isSelected = clip.id == project.selectedVideoClipId,
+                                        thumbnailCache = thumbnailCache,
+                                        onSelect = { onSelectVideoClip(clip.id) },
+                                        onBeginContinuousEdit = onBeginContinuousEdit,
+                                        onCommitContinuousEdit = onCommitContinuousEdit,
+                                        onTrim = { newStart, newEnd ->
+                                            onTrimVideoClip(clip.id, newStart, newEnd)
+                                        },
+                                        onMoveOrder = { targetIndex ->
+                                            onMoveVideoClip(index, targetIndex)
+                                        }
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    // Audio Tracks (Extracted Audio / BGM / Voiceover)
+                    if (project.audioClips.isNotEmpty()) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Text(
+                                text = "AUDIO TRACKS (${project.audioClips.size})",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = TextMuted
+                            )
+                            project.audioClips.forEach { audioClip ->
+                                AudioTrackClipRow(
+                                    audioClip = audioClip,
+                                    dpPerMs = dpPerMs,
+                                    pxPerMs = pxPerMs,
+                                    isSelected = audioClip.id == project.selectedAudioClipId,
+                                    onSelect = { onSelectAudioClip(audioClip.id) },
+                                    onBeginContinuousEdit = onBeginContinuousEdit,
+                                    onCommitContinuousEdit = onCommitContinuousEdit,
+                                    onMoveStartMs = { newStartMs ->
+                                        onMoveAudioClipStart(audioClip.id, newStartMs)
+                                    }
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // Playhead Needle
+                Box(
+                    modifier = Modifier
+                        .offset(x = 12.dp + playheadOffsetDp - 6.dp)
+                        .width(12.dp)
+                        .fillMaxHeight()
+                        .zIndex(10f),
+                    contentAlignment = Alignment.TopCenter
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(12.dp)
+                            .clip(CircleShape)
+                            .background(ClotchBlue)
+                            .border(2.dp, TextPrimary, CircleShape)
+                    )
+                    Box(
+                        modifier = Modifier
+                            .padding(top = 10.dp)
+                            .width(2.dp)
+                            .fillMaxHeight()
+                            .background(ClotchBlue)
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun TimelineRuler(
+    totalMs: Long,
+    zoomLevel: Float,
+    dpPerMs: Float,
+    pxPerMs: Float,
+    maxSeekMs: Long,
+    onSeekTo: (Long) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val latestMaxSeek by rememberUpdatedState(maxSeekMs)
+    val stepMs = when {
+        zoomLevel >= 2.2f -> 1000L
+        zoomLevel >= 1.2f -> 2000L
+        else -> 5000L
+    }
+
+    Box(
+        modifier = modifier
+            .padding(horizontal = 12.dp)
+            .pointerInput(pxPerMs) {
+                detectTapGestures { offset ->
+                    val targetMs = (offset.x / pxPerMs).roundToLong().coerceIn(0L, latestMaxSeek)
+                    onSeekTo(targetMs)
+                }
+            }
+            .pointerInput(pxPerMs) {
+                var dragMs = 0L
+                detectHorizontalDragGestures(
+                    onDragStart = { offset ->
+                        dragMs = (offset.x / pxPerMs).roundToLong().coerceIn(0L, latestMaxSeek)
+                        onSeekTo(dragMs)
+                    },
+                    onHorizontalDrag = { change, dragAmount ->
+                        change.consume()
+                        dragMs = (dragMs + (dragAmount / pxPerMs).roundToLong()).coerceIn(0L, latestMaxSeek)
+                        onSeekTo(dragMs)
+                    }
+                )
+            }
+    ) {
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            val h = size.height
+            drawLine(
+                color = HairlineBorder,
+                start = Offset(0f, h - 1f),
+                end = Offset(size.width, h - 1f),
+                strokeWidth = 1f
+            )
+            var t = 0L
+            while (t <= totalMs) {
+                val x = t * pxPerMs
+                if (x <= size.width) {
+                    drawLine(
+                        color = TextMuted,
+                        start = Offset(x, h - 10f),
+                        end = Offset(x, h - 1f),
+                        strokeWidth = 2f
+                    )
+                }
+                t += stepMs
+            }
+        }
+
+        var tick = 0L
+        while (tick <= totalMs) {
+            val xDp = (tick * dpPerMs).dp
+            Text(
+                text = formatTimelineSec(tick),
+                fontFamily = JetBrainsMonoFamily,
+                fontSize = 10.sp,
+                color = TextMuted,
+                modifier = Modifier.offset(x = xDp + 2.dp, y = 0.dp)
+            )
+            tick += stepMs
+        }
+    }
+}
+
+@Composable
+private fun VideoTrackClipItem(
+    clip: TimelineVideoClip,
+    index: Int,
+    totalClips: Int,
+    widthDp: Dp,
+    pxPerMs: Float,
+    isSelected: Boolean,
+    thumbnailCache: EditorThumbnailCache,
+    onSelect: () -> Unit,
+    onBeginContinuousEdit: () -> Unit,
+    onCommitContinuousEdit: () -> Unit,
+    onTrim: (newStartMs: Long, newEndMs: Long) -> Unit,
+    onMoveOrder: (targetIndex: Int) -> Unit
+) {
+    val context = LocalContext.current
+    val density = LocalDensity.current
+    val currentClip by rememberUpdatedState(clip)
+    var dragReorderOffsetPx by remember { mutableFloatStateOf(0f) }
+
+    val thumbCount = ((widthDp.value / 56f).toInt()).coerceIn(1, 5)
+    val borderColor = if (isSelected) ClotchBlue else HairlineBorder
+    val borderWidth = if (isSelected) 2.dp else 1.dp
+
+    Box(
+        modifier = Modifier
+            .width(widthDp)
+            .fillMaxHeight()
+            .offset { IntOffset(dragReorderOffsetPx.roundToInt(), 0) }
+            .zIndex(if (dragReorderOffsetPx != 0f) 5f else if (isSelected) 2f else 1f)
+            .clip(RoundedCornerShape(10.dp))
+            .background(SlateCard)
+            .border(borderWidth, borderColor, RoundedCornerShape(10.dp))
+            .clickable { onSelect() }
+            .pointerInput(clip.id, index, totalClips) {
+                detectDragGesturesAfterLongPress(
+                    onDragStart = {
+                        onSelect()
+                        dragReorderOffsetPx = 0f
+                    },
+                    onDrag = { change, dragAmount ->
+                        change.consume()
+                        dragReorderOffsetPx += dragAmount.x
+                        val thresholdPx = with(density) { 48.dp.toPx() }
+                        if (dragReorderOffsetPx > thresholdPx && index < totalClips - 1) {
+                            onMoveOrder(index + 1)
+                            dragReorderOffsetPx = 0f
+                        } else if (dragReorderOffsetPx < -thresholdPx && index > 0) {
+                            onMoveOrder(index - 1)
+                            dragReorderOffsetPx = 0f
+                        }
+                    },
+                    onDragEnd = { dragReorderOffsetPx = 0f },
+                    onDragCancel = { dragReorderOffsetPx = 0f }
+                )
+            }
+            .testTag("timeline_video_clip_${clip.id}")
+    ) {
+        // Filmstrip thumbnails
+        Row(modifier = Modifier.fillMaxSize()) {
+            for (slot in 0 until thumbCount) {
+                val fraction = (slot + 0.5f) / thumbCount.toFloat()
+                val sampleTimeMs = clip.trimStartMs + (clip.effectiveDurationMs * fraction).toLong()
+                val bitmap by produceState<Bitmap?>(
+                    initialValue = null,
+                    key1 = clip.sourceUri,
+                    key2 = sampleTimeMs / 500L
+                ) {
+                    value = thumbnailCache.getFrame(context, clip.sourceUri, sampleTimeMs)
+                }
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxHeight()
+                        .background(ObsidianBg)
+                ) {
+                    if (bitmap != null) {
+                        Image(
+                            bitmap = bitmap!!.asImageBitmap(),
+                            contentDescription = null,
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    }
+                }
+            }
+        }
+
+        // Top-left label overlay
+        Surface(
+            color = ObsidianBg.copy(alpha = 0.72f),
+            shape = RoundedCornerShape(6.dp),
+            modifier = Modifier
+                .align(Alignment.TopStart)
+                .padding(horizontal = if (isSelected) 22.dp else 6.dp, vertical = 4.dp)
+        ) {
+            Text(
+                text = clip.displayName,
+                style = MaterialTheme.typography.labelSmall,
+                color = TextPrimary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp)
+            )
+        }
+
+        if (clip.isMuted || clip.audioDetached) {
+            Surface(
+                color = ObsidianBg.copy(alpha = 0.78f),
+                shape = CircleShape,
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(end = if (isSelected) 22.dp else 6.dp, bottom = 4.dp)
+                    .size(20.dp)
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(
+                        imageVector = Icons.Filled.VolumeOff,
+                        contentDescription = "Clip muted",
+                        tint = TextSecondary,
+                        modifier = Modifier.size(12.dp)
+                    )
+                }
+            }
+        }
+
+        // Left & Right Trim Handles when selected
+        if (isSelected) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.CenterStart)
+                    .width(20.dp)
+                    .fillMaxHeight()
+                    .background(ClotchBlue)
+                    .pointerInput(clip.id, pxPerMs) {
+                        var startSnapshot by mutableLongStateOf(currentClip.trimStartMs)
+                        detectHorizontalDragGestures(
+                            onDragStart = {
+                                onBeginContinuousEdit()
+                                startSnapshot = currentClip.trimStartMs
+                            },
+                            onHorizontalDrag = { change, dragAmount ->
+                                change.consume()
+                                val deltaMs = (dragAmount / pxPerMs).roundToLong()
+                                startSnapshot = (startSnapshot + deltaMs)
+                                    .coerceIn(0L, currentClip.trimEndMs - 250L)
+                                onTrim(startSnapshot, currentClip.trimEndMs)
+                            },
+                            onDragEnd = { onCommitContinuousEdit() },
+                            onDragCancel = { onCommitContinuousEdit() }
+                        )
+                    }
+                    .testTag("trim_handle_start_${clip.id}"),
+                contentAlignment = Alignment.Center
+            ) {
+                Box(
+                    modifier = Modifier
+                        .width(3.dp)
+                        .height(22.dp)
+                        .clip(RoundedCornerShape(2.dp))
+                        .background(TextPrimary)
+                )
+            }
+
+            Box(
+                modifier = Modifier
+                    .align(Alignment.CenterEnd)
+                    .width(20.dp)
+                    .fillMaxHeight()
+                    .background(ClotchBlue)
+                    .pointerInput(clip.id, pxPerMs) {
+                        var endSnapshot by mutableLongStateOf(currentClip.trimEndMs)
+                        detectHorizontalDragGestures(
+                            onDragStart = {
+                                onBeginContinuousEdit()
+                                endSnapshot = currentClip.trimEndMs
+                            },
+                            onHorizontalDrag = { change, dragAmount ->
+                                change.consume()
+                                val deltaMs = (dragAmount / pxPerMs).roundToLong()
+                                endSnapshot = (endSnapshot + deltaMs)
+                                    .coerceIn(currentClip.trimStartMs + 250L, currentClip.sourceDurationMs)
+                                onTrim(currentClip.trimStartMs, endSnapshot)
+                            },
+                            onDragEnd = { onCommitContinuousEdit() },
+                            onDragCancel = { onCommitContinuousEdit() }
+                        )
+                    }
+                    .testTag("trim_handle_end_${clip.id}"),
+                contentAlignment = Alignment.Center
+            ) {
+                Box(
+                    modifier = Modifier
+                        .width(3.dp)
+                        .height(22.dp)
+                        .clip(RoundedCornerShape(2.dp))
+                        .background(TextPrimary)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun AudioTrackClipRow(
+    audioClip: TimelineAudioClip,
+    dpPerMs: Float,
+    pxPerMs: Float,
+    isSelected: Boolean,
+    onSelect: () -> Unit,
+    onBeginContinuousEdit: () -> Unit,
+    onCommitContinuousEdit: () -> Unit,
+    onMoveStartMs: (Long) -> Unit
+) {
+    val latestAudio by rememberUpdatedState(audioClip)
+    val startDp = (audioClip.timelineStartMs * dpPerMs).dp
+    val widthDp = (audioClip.effectiveDurationMs * dpPerMs).dp.coerceAtLeast(72.dp)
+
+    val (tint, bg, icon) = when (audioClip.kind) {
+        AudioClipKind.EXTRACTED -> Triple(ClotchBlue, ClotchBlueMuted, Icons.Filled.GraphicEq)
+        AudioClipKind.BGM -> Triple(SignalEmerald, SignalEmeraldMuted, Icons.Filled.MusicNote)
+        AudioClipKind.VOICEOVER -> Triple(CrimsonAccent, CrimsonGlow, Icons.Filled.Mic)
+    }
+
+    Box(modifier = Modifier.fillMaxWidth().height(48.dp)) {
+        Surface(
+            modifier = Modifier
+                .offset(x = startDp)
+                .width(widthDp)
+                .height(44.dp)
+                .pointerInput(audioClip.id, pxPerMs) {
+                    var startDragMs = latestAudio.timelineStartMs
+                    detectHorizontalDragGestures(
+                        onDragStart = {
+                            onSelect()
+                            onBeginContinuousEdit()
+                            startDragMs = latestAudio.timelineStartMs
+                        },
+                        onHorizontalDrag = { change, dragAmount ->
+                            change.consume()
+                            val deltaMs = (dragAmount / pxPerMs).roundToLong()
+                            startDragMs = (startDragMs + deltaMs).coerceAtLeast(0L)
+                            onMoveStartMs(startDragMs)
+                        },
+                        onDragEnd = { onCommitContinuousEdit() },
+                        onDragCancel = { onCommitContinuousEdit() }
+                    )
+                }
+                .clickable { onSelect() }
+                .testTag("timeline_audio_clip_${audioClip.id}"),
+            color = bg,
+            shape = RoundedCornerShape(10.dp),
+            border = BorderStroke(if (isSelected) 2.dp else 1.dp, if (isSelected) TextPrimary else tint)
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                Icon(
+                    imageVector = if (audioClip.isMuted) Icons.Filled.VolumeOff else icon,
+                    contentDescription = audioClip.kind.label,
+                    tint = tint,
+                    modifier = Modifier.size(16.dp)
+                )
+                Text(
+                    text = audioClip.displayName,
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = TextPrimary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f)
+                )
+                Spacer(modifier = Modifier.width(2.dp))
+                Text(
+                    text = formatTimelineSec(audioClip.effectiveDurationMs),
+                    fontFamily = JetBrainsMonoFamily,
+                    fontSize = 10.sp,
+                    color = TextSecondary
+                )
+            }
+        }
+    }
+}
+
+private fun formatTimelineSec(ms: Long): String {
+    val totalSec = (ms.coerceAtLeast(0L) / 1000L)
+    val mins = totalSec / 60L
+    val secs = totalSec % 60L
+    return String.format(Locale.US, "%d:%02d", mins, secs)
+}

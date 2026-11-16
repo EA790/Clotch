@@ -1,6 +1,7 @@
 <resources>
     <string name="app_name">Clotch</string>
     <string name="nav_capture">Capture</string>
+    <string name="nav_editor">Editor</string>
     <string name="nav_clips">Clips</string>
     <string name="nav_settings">Settings</string>
     <string name="notification_channel_recording_name">Screen Recording</string>
