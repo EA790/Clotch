@@ -1,0 +1,6 @@
+{
+  "name": "Clotch",
+  "description": "High-FPS gamer screen recorder for Android with lightweight Discord Rich Presence integration.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

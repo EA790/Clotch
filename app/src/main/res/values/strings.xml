@@ -1,0 +1,14 @@
+<resources>
+    <string name="app_name">Clotch</string>
+    <string name="nav_capture">Capture</string>
+    <string name="nav_clips">Clips</string>
+    <string name="nav_settings">Settings</string>
+    <string name="notification_channel_recording_name">Screen Recording</string>
+    <string name="notification_channel_recording_desc">Controls and live status while Clotch is recording or armed</string>
+    <string name="action_start_recording">Start Recording</string>
+    <string name="action_stop_recording">Stop</string>
+    <string name="action_pause_recording">Pause</string>
+    <string name="action_resume_recording">Resume</string>
+    <string name="action_dismiss_controls">Dismiss</string>
+    <string name="default_game_name">Mobile Game</string>
+</resources>
