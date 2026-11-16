@@ -2,13 +2,10 @@ package com.example.ui.editor
 
 import android.Manifest
 import android.content.pm.PackageManager
-import android.view.ViewGroup
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.annotation.OptIn
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -16,11 +13,9 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -33,26 +28,28 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Redo
 import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material.icons.filled.AddPhotoAlternate
+import androidx.compose.material.icons.filled.AutoFixHigh
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.ContentCut
+import androidx.compose.material.icons.filled.CropRotate
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.LibraryMusic
 import androidx.compose.material.icons.filled.Mic
-import androidx.compose.material.icons.filled.MovieCreation
+import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.TextFields
 import androidx.compose.material.icons.filled.VideoLibrary
 import androidx.compose.material.icons.filled.ZoomIn
 import androidx.compose.material.icons.filled.ZoomOut
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.minimumInteractiveComponentSize
@@ -64,23 +61,18 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.media3.common.util.UnstableApi
-import androidx.media3.ui.PlayerView
 import com.example.data.RecordedClip
 import com.example.editor.EditorViewModel
+import com.example.editor.model.AutoCaptionMode
 import com.example.editor.model.EditorExportState
+import com.example.editor.model.TransitionSpec
 import com.example.editor.model.VoiceoverState
-import com.example.ui.theme.CarbonSurface
 import com.example.ui.theme.ClotchBlue
 import com.example.ui.theme.ClotchBlueMuted
 import com.example.ui.theme.CrimsonAccent
@@ -88,19 +80,27 @@ import com.example.ui.theme.CrimsonGlow
 import com.example.ui.theme.ElevatedSlate
 import com.example.ui.theme.HairlineBorder
 import com.example.ui.theme.JetBrainsMonoFamily
-import com.example.ui.theme.ObsidianBg
 import com.example.ui.theme.SlateCard
 import com.example.ui.theme.TextMuted
 import com.example.ui.theme.TextPrimary
 import com.example.ui.theme.TextSecondary
 import java.util.Locale
 
-@OptIn(UnstableApi::class)
+private enum class EditorToolTab(val label: String, val icon: ImageVector) {
+    AUDIO("Audio", Icons.Filled.GraphicEq),
+    TEXT_CAPTIONS("Text & AI", Icons.Filled.TextFields),
+    COLOR_SPEED("Color/Speed", Icons.Filled.Palette),
+    TRANSFORM("Transform", Icons.Filled.CropRotate),
+    PRO_FX("Chroma/4K", Icons.Filled.AutoFixHigh)
+}
+
 @Composable
 fun EditorScreen(
     editorViewModel: EditorViewModel,
     savedClips: List<RecordedClip>,
+    geminiApiKey: String,
     onNavigateToClips: () -> Unit,
+    onOpenSettings: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -111,9 +111,14 @@ fun EditorScreen(
     val isBusy by editorViewModel.isBusy.collectAsStateWithLifecycle()
     val exportState by editorViewModel.exportState.collectAsStateWithLifecycle()
     val voiceoverState by editorViewModel.voiceoverState.collectAsStateWithLifecycle()
+    val autoCaptionState by editorViewModel.autoCaptionState.collectAsStateWithLifecycle()
+    val chromaPreviewBitmap by editorViewModel.chromaPreviewBitmap.collectAsStateWithLifecycle()
 
+    var activeToolTab by remember { mutableStateOf(EditorToolTab.AUDIO) }
     var showSavedClipsDialog by remember { mutableStateOf(false) }
     var showExportDialog by remember { mutableStateOf(false) }
+    var transitionTargetClipId by remember { mutableStateOf<String?>(null) }
+    var pendingCaptionMode by remember { mutableStateOf<AutoCaptionMode?>(null) }
 
     val videoPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia()
@@ -135,9 +140,16 @@ fun EditorScreen(
         contract = ActivityResultContracts.RequestPermission()
     ) { granted ->
         if (granted) {
-            editorViewModel.startVoiceover()
+            val captionMode = pendingCaptionMode
+            pendingCaptionMode = null
+            if (captionMode != null) {
+                editorViewModel.generateAutoCaptions(captionMode, geminiApiKey)
+            } else {
+                editorViewModel.startVoiceover()
+            }
         } else {
-            editorViewModel.showToast("Microphone permission is required for Voiceover")
+            pendingCaptionMode = null
+            editorViewModel.showToast("Microphone permission is required")
         }
     }
 
@@ -158,7 +170,7 @@ fun EditorScreen(
             modifier = Modifier
                 .widthIn(max = 600.dp)
                 .fillMaxWidth(),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+            verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             // Top Studio Action Bar: Undo, Redo, Zoom, Export
             Row(
@@ -269,124 +281,27 @@ fun EditorScreen(
                 }
             }
 
-            // Live Media3 Video Preview Box
-            Surface(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(min = 190.dp, max = 230.dp)
-                    .aspectRatio(16f / 9f),
-                color = Color.Black,
-                shape = RoundedCornerShape(16.dp),
-                border = BorderStroke(1.dp, HairlineBorder)
-            ) {
-                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    if (project.videoClips.isEmpty()) {
-                        Column(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .background(CarbonSurface)
-                                .padding(16.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.Center
-                        ) {
-                            Icon(
-                                imageVector = Icons.Filled.MovieCreation,
-                                contentDescription = null,
-                                tint = ClotchBlue,
-                                modifier = Modifier.size(34.dp)
-                            )
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Text(
-                                text = "Clotch Video Editor",
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.SemiBold,
-                                color = TextPrimary
-                            )
-                            Spacer(modifier = Modifier.height(12.dp))
-                            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                                Button(
-                                    onClick = {
-                                        videoPickerLauncher.launch(
-                                            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly)
-                                        )
-                                    },
-                                    modifier = Modifier
-                                        .height(48.dp)
-                                        .testTag("empty_import_gallery_button"),
-                                    shape = RoundedCornerShape(12.dp),
-                                    colors = ButtonDefaults.buttonColors(
-                                        containerColor = ClotchBlue,
-                                        contentColor = TextPrimary
-                                    )
-                                ) {
-                                    Text("Gallery Video")
-                                }
-                                OutlinedButton(
-                                    onClick = { showSavedClipsDialog = true },
-                                    modifier = Modifier
-                                        .height(48.dp)
-                                        .testTag("empty_saved_clips_button"),
-                                    shape = RoundedCornerShape(12.dp),
-                                    border = BorderStroke(1.dp, HairlineBorder)
-                                ) {
-                                    Text("Saved Clips", color = TextPrimary)
-                                }
-                            }
-                        }
-                    } else {
-                        AndroidView(
-                            factory = { ctx ->
-                                PlayerView(ctx).apply {
-                                    useController = false
-                                    player = editorViewModel.exoPlayer
-                                    layoutParams = ViewGroup.LayoutParams(
-                                        ViewGroup.LayoutParams.MATCH_PARENT,
-                                        ViewGroup.LayoutParams.MATCH_PARENT
-                                    )
-                                }
-                            },
-                            update = { pv ->
-                                if (pv.player !== editorViewModel.exoPlayer) {
-                                    pv.player = editorViewModel.exoPlayer
-                                }
-                            },
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .clip(RoundedCornerShape(16.dp))
-                        )
-                    }
-
-                    if (isBusy) {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .background(ObsidianBg.copy(alpha = 0.65f)),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            CircularProgressIndicator(color = ClotchBlue)
-                        }
-                    }
-
-                    if (voiceoverState is VoiceoverState.Recording) {
-                        val rec = voiceoverState as VoiceoverState.Recording
-                        Surface(
-                            color = CrimsonAccent,
-                            shape = RoundedCornerShape(50),
-                            modifier = Modifier
-                                .align(Alignment.TopEnd)
-                                .padding(10.dp)
-                        ) {
-                            Text(
-                                text = "REC ${formatClockMs(rec.elapsedMs)}",
-                                fontFamily = JetBrainsMonoFamily,
-                                style = MaterialTheme.typography.labelSmall,
-                                color = TextPrimary,
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
-                            )
-                        }
-                    }
+            // Stage 2 Interactive Media3 Preview Viewport (with Keyframes, Tint, Animated Text/Captions & Stickers)
+            EditorPreviewStage(
+                project = project,
+                exoPlayer = editorViewModel.exoPlayer,
+                isBusy = isBusy,
+                voiceoverState = voiceoverState,
+                onImportGallery = {
+                    videoPickerLauncher.launch(
+                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly)
+                    )
+                },
+                onOpenSavedClips = { showSavedClipsDialog = true },
+                onSelectOverlay = { ovId ->
+                    editorViewModel.selectOverlay(ovId)
+                    activeToolTab = EditorToolTab.TEXT_CAPTIONS
+                },
+                onSelectSticker = { stId ->
+                    editorViewModel.selectSticker(stId)
+                    activeToolTab = EditorToolTab.TEXT_CAPTIONS
                 }
-            }
+            )
 
             // Playback Transport & Clip Edit Actions Bar
             Surface(
@@ -432,7 +347,10 @@ fun EditorScreen(
                         )
                     }
 
-                    val hasSelection = project.selectedVideoClipId != null || project.selectedAudioClipId != null
+                    val hasSelection = project.selectedVideoClipId != null ||
+                        project.selectedAudioClipId != null ||
+                        project.selectedOverlayId != null ||
+                        project.selectedStickerId != null
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(2.dp)
@@ -459,7 +377,7 @@ fun EditorScreen(
                         ) {
                             Icon(
                                 imageVector = Icons.Filled.ContentCopy,
-                                contentDescription = "Duplicate selected clip",
+                                contentDescription = "Duplicate selected item",
                                 tint = if (hasSelection) TextPrimary else TextMuted
                             )
                         }
@@ -472,7 +390,7 @@ fun EditorScreen(
                         ) {
                             Icon(
                                 imageVector = Icons.Filled.DeleteOutline,
-                                contentDescription = "Delete selected clip",
+                                contentDescription = "Delete selected item",
                                 tint = if (hasSelection) CrimsonAccent else TextMuted
                             )
                         }
@@ -480,7 +398,7 @@ fun EditorScreen(
                 }
             }
 
-            // Media Import & Audio Creation Strip
+            // Media Import & Voiceover Strip
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -526,6 +444,7 @@ fun EditorScreen(
                             if (hasMic) {
                                 editorViewModel.startVoiceover()
                             } else {
+                                pendingCaptionMode = null
                                 voiceoverMicLauncher.launch(Manifest.permission.RECORD_AUDIO)
                             }
                         }
@@ -533,7 +452,7 @@ fun EditorScreen(
                 )
             }
 
-            // Multi-Track Interactive Timeline
+            // Multi-Track Interactive Timeline (Video, Transitions, Overlays/Captions, Audio)
             TimelineCanvas(
                 project = project,
                 thumbnailCache = editorViewModel.thumbnailCache,
@@ -541,6 +460,15 @@ fun EditorScreen(
                 onSeekTo = { editorViewModel.seekTo(it) },
                 onSelectVideoClip = { editorViewModel.selectVideoClip(it) },
                 onSelectAudioClip = { editorViewModel.selectAudioClip(it) },
+                onSelectOverlay = { ovId ->
+                    editorViewModel.selectOverlay(ovId)
+                    activeToolTab = EditorToolTab.TEXT_CAPTIONS
+                },
+                onSelectSticker = { stId ->
+                    editorViewModel.selectSticker(stId)
+                    activeToolTab = EditorToolTab.TEXT_CAPTIONS
+                },
+                onOpenTransitionPicker = { clipId -> transitionTargetClipId = clipId },
                 onBeginContinuousEdit = { editorViewModel.beginContinuousEdit() },
                 onCommitContinuousEdit = { editorViewModel.commitContinuousEdit() },
                 onTrimVideoClip = { clipId, startMs, endMs ->
@@ -551,25 +479,145 @@ fun EditorScreen(
                 },
                 onMoveAudioClipStart = { audioId, newStartMs ->
                     editorViewModel.moveAudioClipStart(audioId, newStartMs, commitUndo = false)
+                },
+                onMoveOverlayStart = { overlayId, newStartMs ->
+                    editorViewModel.moveOverlayStartMs(overlayId, newStartMs, commitUndo = false)
                 }
             )
 
-            // Selected Clip Audio / Fade / Extract / Reorder Inspector
+            // Studio Category Switcher (Audio / Text & AI / Color & Speed / Transform / AI Chroma & 4K)
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                EditorToolTab.entries.forEach { tab ->
+                    val selected = activeToolTab == tab
+                    Surface(
+                        onClick = { activeToolTab = tab },
+                        modifier = Modifier
+                            .height(44.dp)
+                            .testTag("tool_tab_${tab.name}"),
+                        shape = RoundedCornerShape(12.dp),
+                        color = if (selected) ClotchBlueMuted else SlateCard,
+                        border = BorderStroke(1.dp, if (selected) ClotchBlue else HairlineBorder)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Icon(
+                                imageVector = tab.icon,
+                                contentDescription = tab.label,
+                                tint = if (selected) ClotchBlue else TextSecondary,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Text(
+                                text = tab.label,
+                                style = MaterialTheme.typography.labelMedium,
+                                color = if (selected) ClotchBlue else TextSecondary
+                            )
+                        }
+                    }
+                }
+            }
+
+            // Active Tool Panel
             val selectedVideoIdx = project.videoClips.indexOfFirst { it.id == project.selectedVideoClipId }
-            SelectedClipInspectorPanel(
-                selectedVideoClip = project.selectedVideoClip,
-                selectedVideoIndex = selectedVideoIdx,
-                totalVideoClips = project.videoClips.size,
-                selectedAudioClip = project.selectedAudioClip,
-                onBeginContinuousEdit = { editorViewModel.beginContinuousEdit() },
-                onCommitContinuousEdit = { editorViewModel.commitContinuousEdit() },
-                onVolumeChange = { editorViewModel.setSelectedVolume(it, commitUndo = false) },
-                onToggleMute = { editorViewModel.toggleSelectedMute() },
-                onFadeInChange = { editorViewModel.setSelectedFadeIn(it, commitUndo = false) },
-                onFadeOutChange = { editorViewModel.setSelectedFadeOut(it, commitUndo = false) },
-                onExtractAudio = { editorViewModel.extractAudioFromSelectedClip() },
-                onMoveVideoOrder = { from, to -> editorViewModel.moveVideoClip(from, to) }
-            )
+            when (activeToolTab) {
+                EditorToolTab.AUDIO -> {
+                    SelectedClipInspectorPanel(
+                        selectedVideoClip = project.selectedVideoClip,
+                        selectedVideoIndex = selectedVideoIdx,
+                        totalVideoClips = project.videoClips.size,
+                        selectedAudioClip = project.selectedAudioClip,
+                        onBeginContinuousEdit = { editorViewModel.beginContinuousEdit() },
+                        onCommitContinuousEdit = { editorViewModel.commitContinuousEdit() },
+                        onVolumeChange = { editorViewModel.setSelectedVolume(it, commitUndo = false) },
+                        onToggleMute = { editorViewModel.toggleSelectedMute() },
+                        onFadeInChange = { editorViewModel.setSelectedFadeIn(it, commitUndo = false) },
+                        onFadeOutChange = { editorViewModel.setSelectedFadeOut(it, commitUndo = false) },
+                        onExtractAudio = { editorViewModel.extractAudioFromSelectedClip() },
+                        onMoveVideoOrder = { from, to -> editorViewModel.moveVideoClip(from, to) }
+                    )
+                }
+                EditorToolTab.TEXT_CAPTIONS -> {
+                    TextAndCaptionsPanel(
+                        project = project,
+                        geminiApiKey = geminiApiKey,
+                        autoCaptionState = autoCaptionState,
+                        onAddTextOverlay = { txt, font, col, anim, pill ->
+                            editorViewModel.addTextOverlay(txt, font, col, anim, pill)
+                        },
+                        onUpdateSelectedOverlay = { txt, font, col, anim, pill, dur, px, py ->
+                            editorViewModel.updateSelectedTextOverlay(txt, font, col, anim, pill, dur, px, py)
+                        },
+                        onGenerateCaptions = { mode ->
+                            if (mode == AutoCaptionMode.FAST_OFFLINE || geminiApiKey.isBlank()) {
+                                val hasMic = ContextCompat.checkSelfPermission(
+                                    context,
+                                    Manifest.permission.RECORD_AUDIO
+                                ) == PackageManager.PERMISSION_GRANTED
+                                if (hasMic) {
+                                    editorViewModel.generateAutoCaptions(mode, geminiApiKey)
+                                } else {
+                                    pendingCaptionMode = mode
+                                    voiceoverMicLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                                }
+                            } else {
+                                editorViewModel.generateAutoCaptions(mode, geminiApiKey)
+                            }
+                        },
+                        onStopOfflineCaption = { editorViewModel.stopOfflineSpeechCaption() },
+                        onOpenSettingsForKey = onOpenSettings,
+                        onAddSticker = { emoji -> editorViewModel.addSticker(emoji) },
+                        onUpdateSelectedSticker = { x, y, sc, dur ->
+                            editorViewModel.updateSelectedSticker(x, y, sc, dur)
+                        }
+                    )
+                }
+                EditorToolTab.COLOR_SPEED -> {
+                    ColorAndSpeedPanel(
+                        selectedClip = project.selectedVideoClip,
+                        onSelectFilter = { editorViewModel.setSelectedColorFilter(it) },
+                        onBeginContinuousEdit = { editorViewModel.beginContinuousEdit() },
+                        onCommitContinuousEdit = { editorViewModel.commitContinuousEdit() },
+                        onColorAdjust = { b, c, s ->
+                            editorViewModel.setSelectedColorAdjust(b, c, s, commitUndo = false)
+                        },
+                        onSelectSpeed = { editorViewModel.setSelectedClipSpeed(it) },
+                        onToggleBlurBackground = { editorViewModel.toggleSelectedBackgroundBlur() }
+                    )
+                }
+                EditorToolTab.TRANSFORM -> {
+                    TransformAndKeyframesPanel(
+                        project = project,
+                        selectedClip = project.selectedVideoClip,
+                        onSelectAspectRatio = { editorViewModel.setAspectRatio(it) },
+                        onRotate90 = { editorViewModel.rotateSelectedClip90() },
+                        onSelectCropMode = { editorViewModel.setSelectedCropMode(it) },
+                        onSaveKeyframe = { x, y, sc, op ->
+                            editorViewModel.addOrUpdateKeyframeAtPlayhead(x, y, sc, op)
+                        },
+                        onDeleteKeyframe = { clipId, kfId ->
+                            editorViewModel.deleteKeyframe(clipId, kfId)
+                        }
+                    )
+                }
+                EditorToolTab.PRO_FX -> {
+                    ProEffectsChromaUpscalePanel(
+                        selectedClip = project.selectedVideoClip,
+                        chromaPreviewBitmap = chromaPreviewBitmap,
+                        onToggleReverse = { editorViewModel.toggleSelectedReverse() },
+                        onInsertFreezeFrame = { editorViewModel.insertFreezeFrameAtPlayhead(3000L) },
+                        onUpdateChromaKey = { editorViewModel.setSelectedChromaKey(it) },
+                        onRefreshChromaPreview = { editorViewModel.refreshChromaPreview() },
+                        onSelectUpscale = { editorViewModel.setSelectedUpscaleTarget(it) }
+                    )
+                }
+            }
 
             Spacer(modifier = Modifier.height(8.dp))
         }
@@ -583,6 +631,17 @@ fun EditorScreen(
                 showSavedClipsDialog = false
             },
             onDismiss = { showSavedClipsDialog = false }
+        )
+    }
+
+    transitionTargetClipId?.let { clipId ->
+        TransitionPickerDialog(
+            initialSpec = project.transitions[clipId] ?: TransitionSpec(),
+            onApply = { spec ->
+                editorViewModel.setTransitionAfterClip(clipId, spec)
+                transitionTargetClipId = null
+            },
+            onDismiss = { transitionTargetClipId = null }
         )
     }
 

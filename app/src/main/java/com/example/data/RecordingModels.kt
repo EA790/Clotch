@@ -74,7 +74,8 @@ data class ClotchSettings(
     val showQuickNotification: Boolean = true,
     val gameName: String = "Mobile Game",
     val discordRpcEnabled: Boolean = true,
-    val discordToken: String = ""
+    val discordToken: String = "",
+    val geminiApiKey: String = ""
 ) {
     val needsMicPermission: Boolean
         get() = recordingMode == RecordingMode.AUDIO_AND_VIDEO ||

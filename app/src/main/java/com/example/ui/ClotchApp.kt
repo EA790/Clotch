@@ -605,9 +605,13 @@ fun ClotchApp(
                     EditorScreen(
                         editorViewModel = editorViewModel,
                         savedClips = clips,
+                        geminiApiKey = settings.geminiApiKey,
                         onNavigateToClips = {
                             viewModel.refreshClips()
                             navigateTo(ClotchRoute.Clips)
+                        },
+                        onOpenSettings = {
+                            navigateTo(ClotchRoute.Settings)
                         }
                     )
                 }
@@ -687,7 +691,8 @@ fun ClotchApp(
                         onOpenSignInDialog = { showSignInDialog = true },
                         onSignOutDiscord = { viewModel.signOutDiscord() },
                         onRequestUsageAccess = { openUsageAccessSettings() },
-                        onScanAppsNow = { viewModel.scanAppsNow() }
+                        onScanAppsNow = { viewModel.scanAppsNow() },
+                        onGeminiApiKeyChanged = { viewModel.setGeminiApiKey(it) }
                     )
                 }
             }

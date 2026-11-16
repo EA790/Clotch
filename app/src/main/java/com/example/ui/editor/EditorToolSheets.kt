@@ -62,6 +62,8 @@ import com.example.editor.model.EditorExportResolution
 import com.example.editor.model.EditorExportState
 import com.example.editor.model.TimelineAudioClip
 import com.example.editor.model.TimelineVideoClip
+import com.example.editor.model.TransitionSpec
+import com.example.editor.model.TransitionType
 import com.example.ui.theme.CarbonSurface
 import com.example.ui.theme.ClotchBlue
 import com.example.ui.theme.ClotchBlueMuted
@@ -626,6 +628,68 @@ fun ExportEditorDialog(
                 TextButton(onClick = onDismiss) {
                     Text("Close", color = TextSecondary)
                 }
+            }
+        }
+    )
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+fun TransitionPickerDialog(
+    initialSpec: TransitionSpec,
+    onApply: (TransitionSpec) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var selectedType by remember(initialSpec) { mutableStateOf(initialSpec.type) }
+    var durationMs by remember(initialSpec) { mutableStateOf(initialSpec.durationMs.toFloat()) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = SlateCard,
+        titleContentColor = TextPrimary,
+        textContentColor = TextSecondary,
+        title = { Text("Clip Transition") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text("Transition Style", style = MaterialTheme.typography.labelMedium, color = TextSecondary)
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    TransitionType.entries.forEach { t ->
+                        ExportChoiceChip(
+                            label = t.label,
+                            selected = selectedType == t,
+                            onClick = { selectedType = t }
+                        )
+                    }
+                }
+                if (selectedType != TransitionType.NONE) {
+                    Text(
+                        text = String.format(Locale.US, "Duration: %.2fs", durationMs / 1000f),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = TextSecondary
+                    )
+                    Slider(
+                        value = durationMs,
+                        onValueChange = { durationMs = it },
+                        valueRange = 250f..1500f,
+                        colors = SliderDefaults.colors(thumbColor = ClotchBlue, activeTrackColor = ClotchBlue)
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { onApply(TransitionSpec(selectedType, durationMs.toLong())) },
+                colors = ButtonDefaults.buttonColors(containerColor = ClotchBlue, contentColor = TextPrimary)
+            ) {
+                Text("Apply")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel", color = TextSecondary)
             }
         }
     )

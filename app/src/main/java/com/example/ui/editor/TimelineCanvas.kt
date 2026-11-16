@@ -28,9 +28,12 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.CompareArrows
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MusicNote
+import androidx.compose.material.icons.filled.TextFields
 import androidx.compose.material.icons.filled.VolumeOff
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -67,7 +70,10 @@ import com.example.editor.engine.EditorThumbnailCache
 import com.example.editor.model.AudioClipKind
 import com.example.editor.model.EditorProject
 import com.example.editor.model.TimelineAudioClip
+import com.example.editor.model.TimelineSticker
+import com.example.editor.model.TimelineTextOverlay
 import com.example.editor.model.TimelineVideoClip
+import com.example.editor.model.TransitionType
 import com.example.ui.theme.CarbonSurface
 import com.example.ui.theme.ClotchBlue
 import com.example.ui.theme.ClotchBlueMuted
@@ -95,11 +101,15 @@ fun TimelineCanvas(
     onSeekTo: (Long) -> Unit,
     onSelectVideoClip: (String?) -> Unit,
     onSelectAudioClip: (String?) -> Unit,
+    onSelectOverlay: (String?) -> Unit = {},
+    onSelectSticker: (String?) -> Unit = {},
+    onOpenTransitionPicker: (afterClipId: String) -> Unit = {},
     onBeginContinuousEdit: () -> Unit,
     onCommitContinuousEdit: () -> Unit,
     onTrimVideoClip: (clipId: String, newStartMs: Long, newEndMs: Long) -> Unit,
     onMoveVideoClip: (fromIndex: Int, toIndex: Int) -> Unit,
     onMoveAudioClipStart: (audioId: String, newStartMs: Long) -> Unit,
+    onMoveOverlayStart: (overlayId: String, newStartMs: Long) -> Unit = { _, _ -> },
     modifier: Modifier = Modifier
 ) {
     val density = LocalDensity.current
@@ -212,6 +222,71 @@ fun TimelineCanvas(
                                             onMoveVideoClip(index, targetIndex)
                                         }
                                     )
+
+                                    if (index < project.videoClips.lastIndex) {
+                                        val transSpec = project.transitions[clip.id]
+                                        val hasTransition = transSpec != null && transSpec.type != TransitionType.NONE
+                                        Surface(
+                                            onClick = { onOpenTransitionPicker(clip.id) },
+                                            color = if (hasTransition) ClotchBlue else ElevatedSlate,
+                                            shape = CircleShape,
+                                            border = BorderStroke(1.dp, if (hasTransition) TextPrimary else HairlineBorder),
+                                            modifier = Modifier
+                                                .padding(horizontal = 2.dp)
+                                                .size(28.dp)
+                                                .zIndex(6f)
+                                                .testTag("transition_badge_${clip.id}")
+                                        ) {
+                                            Box(contentAlignment = Alignment.Center) {
+                                                Icon(
+                                                    imageVector = Icons.Filled.CompareArrows,
+                                                    contentDescription = "Edit clip transition",
+                                                    tint = TextPrimary,
+                                                    modifier = Modifier.size(14.dp)
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Text Overlays, Auto Captions & Stickers Track
+                    if (project.overlays.isNotEmpty() || project.stickers.isNotEmpty()) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Text(
+                                text = "TEXT, CAPTIONS & STICKERS",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = TextMuted
+                            )
+                            project.overlays.forEach { overlay ->
+                                OverlayTrackClipRow(
+                                    overlay = overlay,
+                                    dpPerMs = dpPerMs,
+                                    pxPerMs = pxPerMs,
+                                    isSelected = overlay.id == project.selectedOverlayId,
+                                    onSelect = { onSelectOverlay(overlay.id) },
+                                    onBeginContinuousEdit = onBeginContinuousEdit,
+                                    onCommitContinuousEdit = onCommitContinuousEdit,
+                                    onMoveStartMs = { newStart -> onMoveOverlayStart(overlay.id, newStart) }
+                                )
+                            }
+                            if (project.stickers.isNotEmpty()) {
+                                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    project.stickers.forEach { sticker ->
+                                        StickerTrackPill(
+                                            sticker = sticker,
+                                            dpPerMs = dpPerMs,
+                                            isSelected = sticker.id == project.selectedStickerId,
+                                            onSelect = { onSelectSticker(sticker.id) }
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -640,6 +715,99 @@ private fun AudioTrackClipRow(
                     color = TextSecondary
                 )
             }
+        }
+    }
+}
+
+@Composable
+private fun OverlayTrackClipRow(
+    overlay: TimelineTextOverlay,
+    dpPerMs: Float,
+    pxPerMs: Float,
+    isSelected: Boolean,
+    onSelect: () -> Unit,
+    onBeginContinuousEdit: () -> Unit,
+    onCommitContinuousEdit: () -> Unit,
+    onMoveStartMs: (Long) -> Unit
+) {
+    val latest by rememberUpdatedState(overlay)
+    val startDp = (overlay.timelineStartMs * dpPerMs).dp
+    val widthDp = (overlay.durationMs * dpPerMs).dp.coerceAtLeast(80.dp)
+    val tint = if (overlay.isCaption) SignalEmerald else ClotchBlue
+    val bg = if (overlay.isCaption) SignalEmeraldMuted else ClotchBlueMuted
+
+    Box(modifier = Modifier.fillMaxWidth().height(40.dp)) {
+        Surface(
+            modifier = Modifier
+                .offset(x = startDp)
+                .width(widthDp)
+                .height(36.dp)
+                .pointerInput(overlay.id, pxPerMs) {
+                    var dragStart = latest.timelineStartMs
+                    detectHorizontalDragGestures(
+                        onDragStart = {
+                            onSelect()
+                            onBeginContinuousEdit()
+                            dragStart = latest.timelineStartMs
+                        },
+                        onHorizontalDrag = { change, dragAmount ->
+                            change.consume()
+                            dragStart = (dragStart + (dragAmount / pxPerMs).roundToLong()).coerceAtLeast(0L)
+                            onMoveStartMs(dragStart)
+                        },
+                        onDragEnd = { onCommitContinuousEdit() },
+                        onDragCancel = { onCommitContinuousEdit() }
+                    )
+                }
+                .clickable { onSelect() }
+                .testTag("timeline_overlay_clip_${overlay.id}"),
+            color = bg,
+            shape = RoundedCornerShape(8.dp),
+            border = BorderStroke(if (isSelected) 2.dp else 1.dp, if (isSelected) TextPrimary else tint)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxSize().padding(horizontal = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(5.dp)
+            ) {
+                Icon(
+                    imageVector = if (overlay.isCaption) Icons.Filled.AutoAwesome else Icons.Filled.TextFields,
+                    contentDescription = null,
+                    tint = tint,
+                    modifier = Modifier.size(14.dp)
+                )
+                Text(
+                    text = overlay.text,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = TextPrimary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun StickerTrackPill(
+    sticker: TimelineSticker,
+    dpPerMs: Float,
+    isSelected: Boolean,
+    onSelect: () -> Unit
+) {
+    val widthDp = (sticker.durationMs * dpPerMs).dp.coerceAtLeast(56.dp)
+    Surface(
+        onClick = onSelect,
+        modifier = Modifier
+            .width(widthDp)
+            .height(34.dp)
+            .testTag("timeline_sticker_${sticker.id}"),
+        color = SlateCard,
+        shape = RoundedCornerShape(8.dp),
+        border = BorderStroke(if (isSelected) 2.dp else 1.dp, if (isSelected) ClotchBlue else HairlineBorder)
+    ) {
+        Box(contentAlignment = Alignment.Center) {
+            Text(text = sticker.emoji, fontSize = 16.sp)
         }
     }
 }

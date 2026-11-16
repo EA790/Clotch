@@ -30,6 +30,7 @@ class SettingsRepository(private val context: Context) {
         val GAME_NAME = stringPreferencesKey("game_name")
         val DISCORD_RPC_ENABLED = booleanPreferencesKey("discord_rpc_enabled")
         val DISCORD_TOKEN = stringPreferencesKey("discord_token")
+        val GEMINI_API_KEY = stringPreferencesKey("gemini_api_key")
     }
 
     val settingsFlow: Flow<ClotchSettings> = context.clotchDataStore.data.map { prefs ->
@@ -63,7 +64,8 @@ class SettingsRepository(private val context: Context) {
             showQuickNotification = prefs[Keys.SHOW_QUICK_NOTIFICATION] ?: true,
             gameName = prefs[Keys.GAME_NAME]?.takeIf { it.isNotBlank() } ?: "Mobile Game",
             discordRpcEnabled = prefs[Keys.DISCORD_RPC_ENABLED] ?: true,
-            discordToken = prefs[Keys.DISCORD_TOKEN] ?: ""
+            discordToken = prefs[Keys.DISCORD_TOKEN] ?: "",
+            geminiApiKey = prefs[Keys.GEMINI_API_KEY] ?: ""
         )
     }
 
@@ -134,5 +136,9 @@ class SettingsRepository(private val context: Context) {
 
     suspend fun setDiscordToken(token: String) {
         context.clotchDataStore.edit { it[Keys.DISCORD_TOKEN] = token.trim() }
+    }
+
+    suspend fun setGeminiApiKey(apiKey: String) {
+        context.clotchDataStore.edit { it[Keys.GEMINI_API_KEY] = apiKey.trim() }
     }
 }

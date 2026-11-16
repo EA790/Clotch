@@ -23,6 +23,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.Hub
 import androidx.compose.material.icons.outlined.Mic
 import androidx.compose.material.icons.outlined.Notifications
@@ -109,12 +110,15 @@ fun SettingsScreen(
     onSignOutDiscord: () -> Unit,
     onRequestUsageAccess: () -> Unit,
     onScanAppsNow: () -> Unit,
+    onGeminiApiKeyChanged: (String) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val scrollState = rememberScrollState()
     var tokenInput by remember(settings.discordToken) { mutableStateOf(settings.discordToken) }
+    var geminiKeyInput by remember(settings.geminiApiKey) { mutableStateOf(settings.geminiApiKey) }
     var gameNameInput by remember(settings.gameName) { mutableStateOf(settings.gameName) }
     var showToken by remember { mutableStateOf(false) }
+    var showGeminiKey by remember { mutableStateOf(false) }
     var formatDropdownExpanded by remember { mutableStateOf(false) }
 
     Column(
@@ -516,6 +520,69 @@ fun SettingsScreen(
                         }
                     }
                 }
+            }
+
+            // Video Editor AI Auto Captions (Gemini API Key) Card
+            SettingsSectionCard(
+                title = "Video Editor AI Captions",
+                icon = Icons.Outlined.AutoAwesome,
+                accentColor = ClotchBlue
+            ) {
+                Text(
+                    text = "Optional: Enter your own Gemini API key for gemini-1.5-flash multi-language Auto Captions. When blank or offline, Clotch automatically uses Android's offline SpeechRecognizer.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = TextSecondary
+                )
+
+                OutlinedTextField(
+                    value = geminiKeyInput,
+                    onValueChange = {
+                        geminiKeyInput = it
+                        onGeminiApiKeyChanged(it)
+                    },
+                    label = { Text("Gemini API Key (AI-Powered Captions)") },
+                    placeholder = { Text("AIza... (optional)") },
+                    singleLine = true,
+                    visualTransformation = if (showGeminiKey) {
+                        VisualTransformation.None
+                    } else {
+                        PasswordVisualTransformation()
+                    },
+                    trailingIcon = {
+                        IconButton(
+                            onClick = { showGeminiKey = !showGeminiKey },
+                            modifier = Modifier.minimumInteractiveComponentSize()
+                        ) {
+                            Icon(
+                                imageVector = if (showGeminiKey) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
+                                contentDescription = if (showGeminiKey) "Hide Gemini key" else "Show Gemini key",
+                                tint = TextSecondary
+                            )
+                        }
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("gemini_api_key_input"),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = ClotchBlue,
+                        unfocusedBorderColor = HairlineBorder,
+                        focusedContainerColor = CarbonSurface,
+                        unfocusedContainerColor = CarbonSurface,
+                        focusedTextColor = TextPrimary,
+                        unfocusedTextColor = TextPrimary
+                    )
+                )
+
+                Text(
+                    text = if (geminiKeyInput.isBlank()) {
+                        "Current caption engine default: Offline SpeechRecognizer"
+                    } else {
+                        "Gemini key saved • AI-Powered captions unlocked (with offline fallback)"
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (geminiKeyInput.isBlank()) TextMuted else SignalEmerald
+                )
             }
 
             Spacer(modifier = Modifier.height(12.dp))

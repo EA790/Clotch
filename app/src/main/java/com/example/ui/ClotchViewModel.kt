@@ -192,6 +192,12 @@ class ClotchViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    fun setGeminiApiKey(apiKey: String) {
+        viewModelScope.launch {
+            settingsRepo.setGeminiApiKey(apiKey)
+        }
+    }
+
     fun connectDiscordRpc(tokenOverride: String? = null) {
         controller.connectDiscordRpc(tokenOverride)
     }

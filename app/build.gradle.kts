@@ -99,6 +99,8 @@ dependencies {
   implementation("androidx.media3:media3-effect:1.6.1")
   implementation("androidx.media3:media3-common:1.6.1")
   implementation("androidx.media3:media3-ui:1.6.1")
+  implementation("com.google.mlkit:segmentation-selfie:16.0.0-beta6")
+  implementation("com.google.mlkit:object-detection:17.0.2")
 
   testImplementation(platform("androidx.compose:compose-bom:2024.09.00"))
   testImplementation("androidx.compose.ui:ui-test-junit4")
