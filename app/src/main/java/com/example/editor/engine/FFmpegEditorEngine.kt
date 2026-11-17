@@ -222,6 +222,8 @@ object FFmpegEditorEngine {
                 returnCode = session.returnCode?.toString(),
                 logs = session.allLogsAsString ?: ""
             )
+            runCatching { pngFile.delete() }
+            runCatching { mp4File.delete() }
             null
         }
     }
@@ -241,6 +243,7 @@ object FFmpegEditorEngine {
         }
 
         onProgress(0.03f, "Staging timeline media...")
+        pruneStaleTempCaches(context)
 
         val stagedMap = LinkedHashMap<String, File>()
         val clipUris = project.videoClips.map { clip ->
@@ -700,7 +703,7 @@ object FFmpegEditorEngine {
                     sourceFile.inputStream().use { input ->
                         input.copyTo(out, bufferSize = 64 * 1024)
                     }
-                }
+                } ?: error("Null output stream for $uri")
                 val finish = ContentValues().apply { put(MediaStore.Video.Media.IS_PENDING, 0) }
                 resolver.update(uri, finish, null, null)
                 uri
@@ -713,6 +716,21 @@ object FFmpegEditorEngine {
             val dest = File(dir, fileName)
             sourceFile.copyTo(dest, overwrite = true)
             return Uri.fromFile(dest)
+        }
+    }
+
+    private fun pruneStaleTempCaches(context: Context) {
+        val cutoffMs = System.currentTimeMillis() - 24L * 60L * 60L * 1000L
+        val dirs = listOf("editor_staging", "editor_captions", "editor_overlays", "editor_exports")
+        dirs.forEach { name ->
+            val dir = File(context.cacheDir, name)
+            if (dir.exists()) {
+                dir.listFiles()?.forEach { file ->
+                    if (file.isFile && file.lastModified() in 1L until cutoffMs) {
+                        runCatching { file.delete() }
+                    }
+                }
+            }
         }
     }
 

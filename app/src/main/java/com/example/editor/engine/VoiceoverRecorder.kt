@@ -61,6 +61,7 @@ class VoiceoverRecorder(private val context: Context) {
             stopAndReleaseInternal()
         }
         if (target == null || !target.exists() || target.length() <= 0L) {
+            runCatching { target?.delete() }
             return null
         }
         val durationMs = probeDurationMs(target).coerceAtLeast(500L)

@@ -41,6 +41,9 @@ class HybridAutoCaptionEngine(private val context: Context) {
     private var speechRecognizer: SpeechRecognizer? = null
     private var listenStartWallMs: Long = 0L
 
+    @Volatile
+    private var isDestroyed: Boolean = false
+
     private val httpClient: OkHttpClient by lazy {
         OkHttpClient.Builder()
             .connectTimeout(20, TimeUnit.SECONDS)
@@ -182,14 +185,16 @@ class HybridAutoCaptionEngine(private val context: Context) {
         onSegmentReady: (TimelineTextOverlay) -> Unit,
         onFinished: (String?) -> Unit
     ) {
+        if (isDestroyed) return
         mainHandler.post {
+            if (isDestroyed) return@post
             if (!isSpeechRecognitionAvailable()) {
                 onFinished("Offline SpeechRecognizer service is unavailable on this device.")
                 return@post
             }
             runCatching {
                 speechRecognizer?.destroy()
-                val recognizer = SpeechRecognizer.createSpeechRecognizer(context)
+                val recognizer = SpeechRecognizer.createSpeechRecognizer(context.applicationContext)
                 speechRecognizer = recognizer
                 listenStartWallMs = System.currentTimeMillis()
 
@@ -202,6 +207,7 @@ class HybridAutoCaptionEngine(private val context: Context) {
                     override fun onBufferReceived(buffer: ByteArray?) {}
                     override fun onEndOfSpeech() {}
                     override fun onPartialResults(partialResults: Bundle?) {
+                        if (isDestroyed) return
                         val partial = partialResults
                             ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                             ?.firstOrNull()
@@ -210,6 +216,7 @@ class HybridAutoCaptionEngine(private val context: Context) {
                     }
 
                     override fun onResults(results: Bundle?) {
+                        if (isDestroyed) return
                         val text = results
                             ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                             ?.firstOrNull()
@@ -239,6 +246,7 @@ class HybridAutoCaptionEngine(private val context: Context) {
                     }
 
                     override fun onError(error: Int) {
+                        if (isDestroyed) return
                         val reason = when (error) {
                             SpeechRecognizer.ERROR_NO_MATCH -> "No speech detected."
                             SpeechRecognizer.ERROR_AUDIO -> "Microphone audio error."
@@ -260,21 +268,32 @@ class HybridAutoCaptionEngine(private val context: Context) {
                 recognizer.startListening(intent)
             }.onFailure { t ->
                 CrashLogger.logError("OfflineSpeechRecognizer", "Failed to start offline recognition", t)
-                onFinished("Unable to launch offline SpeechRecognizer.")
+                if (!isDestroyed) {
+                    onFinished("Unable to launch offline SpeechRecognizer.")
+                }
             }
         }
     }
 
     fun stopOfflineSpeechCapture() {
+        if (isDestroyed) return
         mainHandler.post {
             runCatching { speechRecognizer?.stopListening() }
         }
     }
 
     fun destroy() {
-        mainHandler.post {
+        isDestroyed = true
+        mainHandler.removeCallbacksAndMessages(null)
+        val cleanupAction = Runnable {
+            runCatching { speechRecognizer?.cancel() }
             runCatching { speechRecognizer?.destroy() }
             speechRecognizer = null
+        }
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            cleanupAction.run()
+        } else {
+            mainHandler.post(cleanupAction)
         }
     }
 

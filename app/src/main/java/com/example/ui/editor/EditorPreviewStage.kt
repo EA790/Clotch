@@ -1,5 +1,7 @@
 package com.example.ui.editor
 
+import android.view.LayoutInflater
+import android.view.View
 import android.view.ViewGroup
 import androidx.annotation.OptIn
 import androidx.compose.foundation.BorderStroke
@@ -31,6 +33,12 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -45,9 +53,14 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
+import com.example.R
 import com.example.editor.model.ColorFilterPreset
 import com.example.editor.model.EditorFontChoice
 import com.example.editor.model.EditorProject
@@ -74,12 +87,77 @@ fun EditorPreviewStage(
     exoPlayer: ExoPlayer,
     isBusy: Boolean,
     voiceoverState: VoiceoverState,
+    isEditorActive: Boolean = true,
+    onPreparePreview: () -> Unit = {},
+    onStopPreview: () -> Unit = {},
     onImportGallery: () -> Unit,
     onOpenSavedClips: () -> Unit,
     onSelectOverlay: (String) -> Unit,
     onSelectSticker: (String) -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val latestOnPrepare by rememberUpdatedState(onPreparePreview)
+    val latestOnStop by rememberUpdatedState(onStopPreview)
+    var playerViewRef by remember { mutableStateOf<PlayerView?>(null) }
+
+    DisposableEffect(lifecycleOwner, exoPlayer, isEditorActive) {
+        if (!isEditorActive) {
+            playerViewRef?.let { pv ->
+                pv.visibility = View.INVISIBLE
+                pv.onPause()
+                pv.player = null
+            }
+            latestOnStop()
+        } else {
+            latestOnPrepare()
+            playerViewRef?.let { pv ->
+                pv.visibility = View.VISIBLE
+                if (pv.player !== exoPlayer) {
+                    pv.player = exoPlayer
+                }
+                pv.onResume()
+            }
+        }
+
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_START -> {
+                    if (isEditorActive) {
+                        latestOnPrepare()
+                        playerViewRef?.let { pv ->
+                            pv.visibility = View.VISIBLE
+                            if (pv.player !== exoPlayer) {
+                                pv.player = exoPlayer
+                            }
+                            pv.onResume()
+                        }
+                    }
+                }
+                Lifecycle.Event.ON_STOP -> {
+                    playerViewRef?.let { pv ->
+                        pv.visibility = View.INVISIBLE
+                        pv.onPause()
+                        pv.player = null
+                    }
+                    latestOnStop()
+                }
+                else -> Unit
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            playerViewRef?.let { pv ->
+                pv.visibility = View.INVISIBLE
+                pv.onPause()
+                pv.player = null
+            }
+            latestOnStop()
+        }
+    }
+
     val ratio = project.aspectRatio.widthRatio / project.aspectRatio.heightRatio
     val activeWindow = project.findVideoClipAt(project.playheadMs)
     val activeClip = activeWindow?.clip
@@ -173,18 +251,51 @@ fun EditorPreviewStage(
 
                     AndroidView(
                         factory = { ctx ->
-                            PlayerView(ctx).apply {
+                            val inflated = LayoutInflater.from(ctx).inflate(
+                                R.layout.view_editor_player,
+                                null,
+                                false
+                            ) as PlayerView
+                            inflated.apply {
                                 useController = false
-                                player = exoPlayer
+                                resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
+                                setKeepContentOnPlayerReset(false)
                                 layoutParams = ViewGroup.LayoutParams(
                                     ViewGroup.LayoutParams.MATCH_PARENT,
                                     ViewGroup.LayoutParams.MATCH_PARENT
                                 )
+                                player = if (isEditorActive) exoPlayer else null
+                                visibility = if (isEditorActive) View.VISIBLE else View.INVISIBLE
+                                playerViewRef = this
                             }
                         },
                         update = { pv ->
-                            if (pv.player !== exoPlayer) {
-                                pv.player = exoPlayer
+                            playerViewRef = pv
+                            val targetPlayer = if (isEditorActive) exoPlayer else null
+                            pv.visibility = if (isEditorActive) View.VISIBLE else View.INVISIBLE
+                            if (pv.player !== targetPlayer) {
+                                if (targetPlayer == null) {
+                                    pv.onPause()
+                                }
+                                pv.player = targetPlayer
+                                if (targetPlayer != null) {
+                                    pv.onResume()
+                                }
+                            }
+                        },
+                        onReset = { pv ->
+                            pv.visibility = View.INVISIBLE
+                            pv.onPause()
+                            pv.player = null
+                            exoPlayer.clearVideoSurface()
+                        },
+                        onRelease = { pv ->
+                            pv.visibility = View.INVISIBLE
+                            pv.onPause()
+                            pv.player = null
+                            exoPlayer.clearVideoSurface()
+                            if (playerViewRef === pv) {
+                                playerViewRef = null
                             }
                         },
                         modifier = Modifier
@@ -196,7 +307,9 @@ fun EditorPreviewStage(
                                     translationY = kfEval.posY * stageH
                                     scaleX = kfEval.scale
                                     scaleY = kfEval.scale
-                                    alpha = kfEval.opacity
+                                    alpha = if (isEditorActive) kfEval.opacity else 0f
+                                } else if (!isEditorActive) {
+                                    alpha = 0f
                                 }
                             }
                     )

@@ -246,7 +246,7 @@ fun ClotchApp(
 
     fun navigateTo(route: ClotchRoute) {
         if (currentRoute == ClotchRoute.Editor.route && route != ClotchRoute.Editor) {
-            editorViewModel.pausePlayback()
+            editorViewModel.stopPreviewForExit()
         }
         navController.navigate(route.route) {
             popUpTo(navController.graph.findStartDestination().id) { saveState = true }
@@ -606,6 +606,7 @@ fun ClotchApp(
                         editorViewModel = editorViewModel,
                         savedClips = clips,
                         geminiApiKey = settings.geminiApiKey,
+                        isEditorActive = currentRoute == ClotchRoute.Editor.route,
                         onNavigateToClips = {
                             viewModel.refreshClips()
                             navigateTo(ClotchRoute.Clips)

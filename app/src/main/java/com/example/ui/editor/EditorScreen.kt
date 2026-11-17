@@ -99,6 +99,7 @@ fun EditorScreen(
     editorViewModel: EditorViewModel,
     savedClips: List<RecordedClip>,
     geminiApiKey: String,
+    isEditorActive: Boolean = true,
     onNavigateToClips: () -> Unit,
     onOpenSettings: () -> Unit,
     modifier: Modifier = Modifier
@@ -155,7 +156,7 @@ fun EditorScreen(
 
     DisposableEffect(Unit) {
         onDispose {
-            editorViewModel.pausePlayback()
+            editorViewModel.stopPreviewForExit()
         }
     }
 
@@ -287,6 +288,9 @@ fun EditorScreen(
                 exoPlayer = editorViewModel.exoPlayer,
                 isBusy = isBusy,
                 voiceoverState = voiceoverState,
+                isEditorActive = isEditorActive,
+                onPreparePreview = { editorViewModel.preparePreviewIfNeeded() },
+                onStopPreview = { editorViewModel.stopPreviewForExit() },
                 onImportGallery = {
                     videoPickerLauncher.launch(
                         PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly)

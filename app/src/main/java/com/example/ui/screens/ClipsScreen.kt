@@ -7,6 +7,7 @@ import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Build
 import android.text.format.Formatter
+import android.util.LruCache
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -310,11 +311,14 @@ private fun ClipItemCard(
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 val thumbnailBitmap by produceState<Bitmap?>(
-                    initialValue = null,
-                    key1 = clip.uri
+                    initialValue = ClipsThumbnailCache.get(clip.uri, clip.sizeBytes),
+                    key1 = clip.uri,
+                    key2 = clip.sizeBytes
                 ) {
-                    value = withContext(Dispatchers.IO) {
-                        extractFirstVideoFrame(context, clip.uri)
+                    if (value == null) {
+                        value = withContext(Dispatchers.IO) {
+                            extractFirstVideoFrame(context, clip.uri, clip.sizeBytes)
+                        }
                     }
                 }
 
@@ -479,9 +483,22 @@ private fun ClipMetaPill(label: String) {
     }
 }
 
-private fun extractFirstVideoFrame(context: Context, uri: Uri): Bitmap? {
+private object ClipsThumbnailCache {
+    private val cache = object : LruCache<String, Bitmap>(6 * 1024) {
+        override fun sizeOf(key: String, value: Bitmap): Int = (value.byteCount / 1024).coerceAtLeast(1)
+    }
+
+    fun get(uri: Uri, sizeBytes: Long): Bitmap? = cache.get("${uri}_${sizeBytes}")
+
+    fun put(uri: Uri, sizeBytes: Long, bitmap: Bitmap) {
+        cache.put("${uri}_${sizeBytes}", bitmap)
+    }
+}
+
+private fun extractFirstVideoFrame(context: Context, uri: Uri, sizeBytes: Long): Bitmap? {
+    ClipsThumbnailCache.get(uri, sizeBytes)?.let { return it }
     val retriever = MediaMetadataRetriever()
-    return try {
+    val decoded = try {
         retriever.setDataSource(context, uri)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
             retriever.getScaledFrameAtTime(
@@ -498,4 +515,8 @@ private fun extractFirstVideoFrame(context: Context, uri: Uri): Bitmap? {
     } finally {
         runCatching { retriever.release() }
     }
+    if (decoded != null) {
+        ClipsThumbnailCache.put(uri, sizeBytes, decoded)
+    }
+    return decoded
 }

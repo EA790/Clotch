@@ -191,4 +191,10 @@ class DiscordProfileManager(private val context: Context) {
             Toast.makeText(context.applicationContext, message, Toast.LENGTH_LONG).show()
         }
     }
+
+    fun shutdown() {
+        mainHandler.removeCallbacksAndMessages(null)
+        runCatching { httpClient.dispatcher.cancelAll() }
+        runCatching { httpClient.connectionPool.evictAll() }
+    }
 }

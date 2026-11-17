@@ -119,6 +119,9 @@ class ScreenRecordService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_START -> {
+                if (mediaProjection != null || mediaRecorder != null) {
+                    return START_NOT_STICKY
+                }
                 val resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, Activity.RESULT_CANCELED)
                 val projectionData = IntentCompat.getParcelableExtra(
                     intent,
@@ -718,14 +721,19 @@ class ScreenRecordService : Service() {
                 }
                 val uri = contentResolver.insert(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, values)
                     ?: return false
-                contentResolver.openOutputStream(uri)?.use { out ->
-                    FileInputStream(sourceFile).use { input -> input.copyTo(out) }
-                } ?: return false
-                val doneValues = ContentValues().apply {
-                    put(MediaStore.Audio.Media.IS_PENDING, 0)
+                return try {
+                    contentResolver.openOutputStream(uri)?.use { out ->
+                        FileInputStream(sourceFile).use { input -> input.copyTo(out) }
+                    } ?: error("Null output stream for $uri")
+                    val doneValues = ContentValues().apply {
+                        put(MediaStore.Audio.Media.IS_PENDING, 0)
+                    }
+                    contentResolver.update(uri, doneValues, null, null)
+                    true
+                } catch (_: Exception) {
+                    runCatching { contentResolver.delete(uri, null, null) }
+                    false
                 }
-                contentResolver.update(uri, doneValues, null, null)
-                true
             } else {
                 val musicDir = File(getExternalFilesDir(Environment.DIRECTORY_MUSIC), "Clotch")
                 if (!musicDir.exists()) musicDir.mkdirs()
@@ -755,18 +763,21 @@ class ScreenRecordService : Service() {
                 }
                 val uri = contentResolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values)
                     ?: return false
-
-                contentResolver.openOutputStream(uri)?.use { out ->
-                    FileInputStream(sourceFile).use { input ->
-                        input.copyTo(out)
+                return try {
+                    contentResolver.openOutputStream(uri)?.use { out ->
+                        FileInputStream(sourceFile).use { input ->
+                            input.copyTo(out)
+                        }
+                    } ?: error("Null output stream for $uri")
+                    val doneValues = ContentValues().apply {
+                        put(MediaStore.Video.Media.IS_PENDING, 0)
                     }
-                } ?: return false
-
-                val doneValues = ContentValues().apply {
-                    put(MediaStore.Video.Media.IS_PENDING, 0)
+                    contentResolver.update(uri, doneValues, null, null)
+                    true
+                } catch (_: Exception) {
+                    runCatching { contentResolver.delete(uri, null, null) }
+                    false
                 }
-                contentResolver.update(uri, doneValues, null, null)
-                true
             } else {
                 val moviesDir = File(getExternalFilesDir(Environment.DIRECTORY_MOVIES), "Clotch")
                 if (!moviesDir.exists()) moviesDir.mkdirs()
@@ -953,10 +964,11 @@ class ScreenRecordService : Service() {
 
     override fun onDestroy() {
         timerJob?.cancel()
-        serviceScope.cancel()
+        timerJob = null
         if (!isStopping) {
             cleanupMediaResources(deletePending = false)
         }
+        serviceScope.cancel()
         super.onDestroy()
     }
 }

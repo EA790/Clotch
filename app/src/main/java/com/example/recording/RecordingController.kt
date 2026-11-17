@@ -28,6 +28,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -465,7 +466,7 @@ class RecordingController(private val context: Context) {
 
     fun connectDiscordRpc(tokenOverride: String? = null) {
         val token = tokenOverride ?: settings.value.discordToken
-        discordRpcClient.connect(token, showSuccessToast = true)
+        discordRpcClient.connect(token = token, showSuccessToast = true)
         pushCompositePresence()
     }
 
@@ -478,5 +479,15 @@ class RecordingController(private val context: Context) {
         mainHandler.post {
             Toast.makeText(context.applicationContext, message, Toast.LENGTH_LONG).show()
         }
+    }
+
+    fun release() {
+        countdownJob?.cancel()
+        countdownJob = null
+        appDetectionJob?.cancel()
+        appDetectionJob = null
+        mainHandler.removeCallbacksAndMessages(null)
+        discordRpcClient.release()
+        scope.cancel()
     }
 }

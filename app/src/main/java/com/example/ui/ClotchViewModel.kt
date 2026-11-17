@@ -262,4 +262,9 @@ class ClotchViewModel(application: Application) : AndroidViewModel(application) 
     fun showToast(message: String) {
         controller.showToast(message)
     }
+
+    override fun onCleared() {
+        super.onCleared()
+        profileManager.shutdown()
+    }
 }

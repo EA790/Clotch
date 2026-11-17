@@ -144,6 +144,7 @@ object CrashLogger {
             }
         }
 
+        var createdNewRow = false
         if (targetUri == null) {
             val values = ContentValues().apply {
                 put(MediaStore.Files.FileColumns.DISPLAY_NAME, FILE_NAME)
@@ -151,15 +152,23 @@ object CrashLogger {
                 put(MediaStore.Files.FileColumns.RELATIVE_PATH, relativePath)
             }
             targetUri = resolver.insert(collection, values)
+            createdNewRow = targetUri != null
         }
 
         val uri = targetUri ?: return false
-        resolver.openOutputStream(uri, "wa")?.use { stream ->
-            stream.write(entry.toByteArray(Charsets.UTF_8))
-            stream.flush()
-            return true
+        return try {
+            resolver.openOutputStream(uri, "wa")?.use { stream ->
+                stream.write(entry.toByteArray(Charsets.UTF_8))
+                stream.flush()
+                true
+            } ?: run {
+                if (createdNewRow) runCatching { resolver.delete(uri, null, null) }
+                false
+            }
+        } catch (t: Throwable) {
+            if (createdNewRow) runCatching { resolver.delete(uri, null, null) }
+            throw t
         }
-        return false
     }
 
     @Suppress("DEPRECATION")

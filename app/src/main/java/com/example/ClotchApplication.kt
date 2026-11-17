@@ -13,4 +13,11 @@ class ClotchApplication : Application() {
         CrashLogger.install(this)
         recordingController = RecordingController(this)
     }
+
+    override fun onTerminate() {
+        if (::recordingController.isInitialized) {
+            recordingController.release()
+        }
+        super.onTerminate()
+    }
 }

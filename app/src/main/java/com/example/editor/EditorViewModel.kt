@@ -266,8 +266,63 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun pausePlayback() {
+        stopPlaybackTicker()
         if (exoPlayer.isPlaying) exoPlayer.pause()
         audioPreviewPlayers.values.forEach { if (it.isPlaying) it.pause() }
+    }
+
+    fun stopPreviewForExit() {
+        stopPlaybackTicker()
+        _isPlaying.value = false
+        runCatching {
+            if (exoPlayer.isPlaying) {
+                exoPlayer.pause()
+            }
+            exoPlayer.stop()
+            exoPlayer.clearVideoSurface()
+        }
+        audioPreviewPlayers.values.forEach { player ->
+            runCatching {
+                if (player.isPlaying) {
+                    player.pause()
+                }
+                player.stop()
+            }
+        }
+    }
+
+    @OptIn(UnstableApi::class)
+    fun preparePreviewIfNeeded() {
+        val current = _project.value
+        if (current.videoClips.isEmpty()) return
+
+        if (exoPlayer.playbackState == Player.STATE_IDLE || exoPlayer.mediaItemCount == 0) {
+            lastLoadedSignature = ""
+            syncMedia3PlaylistIfNeeded(current)
+        } else {
+            syncExoPlayerToTimelineMs(current.playheadMs)
+        }
+
+        current.audioClips.forEach { audio ->
+            val player = audioPreviewPlayers[audio.id]
+            if (player != null && player.playbackState == Player.STATE_IDLE) {
+                if (player.mediaItemCount == 0) {
+                    val item = MediaItem.Builder()
+                        .setUri(audio.sourceUri)
+                        .setClippingConfiguration(
+                            MediaItem.ClippingConfiguration.Builder()
+                                .setStartPositionMs(audio.trimStartMs)
+                                .setEndPositionMs(audio.trimEndMs)
+                                .build()
+                        )
+                        .build()
+                    player.setMediaItem(item)
+                }
+                player.prepare()
+            }
+        }
+        syncAudioPreviewToTimelineMs(current.playheadMs)
+        applyLivePreviewPlaybackSettings()
     }
 
     fun seekTo(timelineMs: Long) {
@@ -1330,8 +1385,17 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
         voiceoverRecorder.cancelRecording()
         captionEngine.destroy()
         chromaProcessor.closeAllDetectors()
-        exoPlayer.release()
-        audioPreviewPlayers.values.forEach { it.release() }
+        runCatching {
+            exoPlayer.stop()
+            exoPlayer.clearVideoSurface()
+            exoPlayer.release()
+        }
+        audioPreviewPlayers.values.forEach {
+            runCatching {
+                it.stop()
+                it.release()
+            }
+        }
         audioPreviewPlayers.clear()
         audioPlayerSignatures.clear()
         thumbnailCache.clear()
