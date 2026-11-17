@@ -55,7 +55,7 @@ google-services.json
 
 # Environment variables
 .env
-
+.metadata.json
 # macOS
 .DS_Store
 
