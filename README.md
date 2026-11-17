@@ -27,7 +27,7 @@ Here is what I'm currently working on and what's coming in future updates:
 - [x] Gallery Import.
 - [x] Discord Rich Presence (KizzyRPC).
 - [x] Crash Logger for easy debugging.
-- [ ] 
+
 ## Built With
 - Kotlin & Jetpack Compose (UI)
 - Media3 / ExoPlayer (Preview)
