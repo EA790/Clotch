@@ -64,6 +64,10 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
+import androidx.compose.material.icons.filled.Warning
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.window.Dialog
+import com.example.R
 import com.example.discord.DiscordUserProfile
 import com.example.ui.theme.CarbonSurface
 import com.example.ui.theme.ClotchBlue
@@ -77,6 +81,8 @@ import com.example.ui.theme.SlateCard
 import com.example.ui.theme.TextMuted
 import com.example.ui.theme.TextPrimary
 import com.example.ui.theme.TextSecondary
+import com.example.ui.theme.WarningAmber
+import com.example.ui.theme.WarningAmberMuted
 
 /**
  * White rounded badge with Discord Clyde vector silhouette matching Reference Image 4.
@@ -258,68 +264,109 @@ fun DiscordProfileCard(
                 }
             }
         } else {
-            Row(
+            Column(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(16.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
+                verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 Row(
-                    modifier = Modifier.weight(1f),
+                    modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    Box(
-                        modifier = Modifier
-                            .size(46.dp)
-                            .clip(CircleShape)
-                            .background(DiscordBlurpleMuted),
-                        contentAlignment = Alignment.Center
+                    Row(
+                        modifier = Modifier.weight(1f),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
-                        Icon(
-                            imageVector = Icons.Filled.Person,
-                            contentDescription = null,
-                            tint = DiscordBlurple,
-                            modifier = Modifier.size(24.dp)
-                        )
+                        Box(
+                            modifier = Modifier
+                                .size(46.dp)
+                                .clip(CircleShape)
+                                .background(DiscordBlurpleMuted),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.Person,
+                                contentDescription = null,
+                                tint = DiscordBlurple,
+                                modifier = Modifier.size(24.dp)
+                            )
+                        }
+                        Column(modifier = Modifier.padding(end = 8.dp)) {
+                            Text(
+                                text = "Discord Account",
+                                style = MaterialTheme.typography.titleSmall,
+                                color = TextPrimary
+                            )
+                            Text(
+                                text = "Sign in to show username, avatar & bio",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = TextSecondary
+                            )
+                        }
                     }
-                    Column(modifier = Modifier.padding(end = 8.dp)) {
-                        Text(
-                            text = "Discord Account",
-                            style = MaterialTheme.typography.titleSmall,
-                            color = TextPrimary
+
+                    Button(
+                        onClick = onSignInClick,
+                        enabled = !isLoading,
+                        modifier = Modifier.testTag("discord_sign_in_button"),
+                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = DiscordBlurple,
+                            contentColor = TextPrimary
                         )
-                        Text(
-                            text = "Sign in to show username, avatar & bio",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = TextSecondary
-                        )
+                    ) {
+                        if (isLoading) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(16.dp),
+                                color = TextPrimary,
+                                strokeWidth = 2.dp
+                            )
+                        } else {
+                            Text("Sign In", style = MaterialTheme.typography.labelLarge)
+                        }
                     }
                 }
 
-                Button(
-                    onClick = onSignInClick,
-                    enabled = !isLoading,
-                    modifier = Modifier.testTag("discord_sign_in_button"),
-                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
-                    shape = RoundedCornerShape(12.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = DiscordBlurple,
-                        contentColor = TextPrimary
-                    )
-                ) {
-                    if (isLoading) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(16.dp),
-                            color = TextPrimary,
-                            strokeWidth = 2.dp
-                        )
-                    } else {
-                        Text("Sign In", style = MaterialTheme.typography.labelLarge)
-                    }
-                }
+                DiscordSignInDisclaimerBanner(
+                    modifier = Modifier.testTag("discord_card_disclaimer")
+                )
             }
+        }
+    }
+}
+
+@Composable
+fun DiscordSignInDisclaimerBanner(
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        modifier = modifier.fillMaxWidth(),
+        color = WarningAmberMuted.copy(alpha = 0.14f),
+        shape = RoundedCornerShape(10.dp),
+        border = BorderStroke(1.dp, CrimsonAccent.copy(alpha = 0.28f))
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.Top,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Icon(
+                imageVector = Icons.Filled.Warning,
+                contentDescription = null,
+                tint = WarningAmber,
+                modifier = Modifier
+                    .padding(top = 1.dp)
+                    .size(14.dp)
+            )
+            Text(
+                text = stringResource(id = R.string.discord_signin_disclaimer),
+                style = MaterialTheme.typography.bodySmall,
+                color = WarningAmber.copy(alpha = 0.92f)
+            )
         }
     }
 }
@@ -338,26 +385,32 @@ fun DiscordSignInDialog(
     var clientIdInput by remember(initialClientId) { mutableStateOf(initialClientId) }
     var showToken by remember { mutableStateOf(false) }
 
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        containerColor = SlateCard,
-        titleContentColor = TextPrimary,
-        textContentColor = TextSecondary,
-        title = {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            color = SlateCard,
+            shape = RoundedCornerShape(24.dp),
+            border = BorderStroke(1.dp, HairlineBorder)
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(20.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                DiscordLogoBadge(size = 34.dp)
-                Text(
-                    text = "Sign in with Discord",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold
-                )
-            }
-        },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    DiscordLogoBadge(size = 34.dp)
+                    Text(
+                        text = "Sign in with Discord",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = TextPrimary
+                    )
+                }
+
                 TabRow(
                     selectedTabIndex = selectedTab,
                     containerColor = CarbonSurface,
@@ -440,51 +493,61 @@ fun DiscordSignInDialog(
                         )
                     )
                 }
-            }
-        },
-        confirmButton = {
-            if (selectedTab == 0) {
-                Button(
-                    onClick = { onSignInWithToken(tokenInput) },
-                    enabled = !isLoading && tokenInput.isNotBlank(),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = DiscordBlurple,
-                        contentColor = TextPrimary
-                    )
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End,
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    if (isLoading) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(16.dp),
-                            color = TextPrimary,
-                            strokeWidth = 2.dp
-                        )
+                    TextButton(onClick = onDismiss) {
+                        Text("Cancel", color = TextSecondary)
+                    }
+                    Spacer(modifier = Modifier.width(8.dp))
+                    if (selectedTab == 0) {
+                        Button(
+                            onClick = { onSignInWithToken(tokenInput) },
+                            enabled = !isLoading && tokenInput.isNotBlank(),
+                            modifier = Modifier.testTag("dialog_discord_sign_in_button"),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = DiscordBlurple,
+                                contentColor = TextPrimary
+                            )
+                        ) {
+                            if (isLoading) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(16.dp),
+                                    color = TextPrimary,
+                                    strokeWidth = 2.dp
+                                )
+                            } else {
+                                Text("Sign In & Sync")
+                            }
+                        }
                     } else {
-                        Text("Sign In & Sync")
+                        Button(
+                            onClick = { onLaunchOAuthBrowser(clientIdInput) },
+                            enabled = clientIdInput.isNotBlank(),
+                            modifier = Modifier.testTag("dialog_discord_oauth_button"),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = ClotchBlue,
+                                contentColor = TextPrimary
+                            )
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.OpenInBrowser,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Open Discord")
+                        }
                     }
                 }
-            } else {
-                Button(
-                    onClick = { onLaunchOAuthBrowser(clientIdInput) },
-                    enabled = clientIdInput.isNotBlank(),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = ClotchBlue,
-                        contentColor = TextPrimary
-                    )
-                ) {
-                    Icon(
-                        imageVector = Icons.Filled.OpenInBrowser,
-                        contentDescription = null,
-                        modifier = Modifier.size(16.dp)
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text("Open Discord")
-                }
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("Cancel", color = TextSecondary)
+
+                DiscordSignInDisclaimerBanner(
+                    modifier = Modifier.testTag("discord_dialog_disclaimer")
+                )
             }
         }
-    )
+    }
 }

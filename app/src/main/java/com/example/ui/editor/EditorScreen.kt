@@ -480,6 +480,9 @@ fun EditorScreen(
                 onMoveAudioClipStart = { audioId, newStartMs ->
                     editorViewModel.moveAudioClipStart(audioId, newStartMs, commitUndo = false)
                 },
+                onToggleAudioMute = { audioId ->
+                    editorViewModel.toggleAudioTrackMute(audioId)
+                },
                 onMoveOverlayStart = { overlayId, newStartMs ->
                     editorViewModel.moveOverlayStartMs(overlayId, newStartMs, commitUndo = false)
                 }

@@ -24,6 +24,7 @@ class SettingsRepository(private val context: Context) {
         val COUNTDOWN = stringPreferencesKey("countdown_option")
         val VIDEO_FORMAT = stringPreferencesKey("video_format")
         val RECORDING_MODE = stringPreferencesKey("recording_mode")
+        val AUDIO_CAPTURE_SOURCE = stringPreferencesKey("audio_capture_source")
         val RECORD_AUDIO_SEPARATELY = booleanPreferencesKey("record_audio_separately")
         val RECORD_MIC_AUDIO = booleanPreferencesKey("record_mic_audio")
         val SHOW_QUICK_NOTIFICATION = booleanPreferencesKey("show_quick_notification")
@@ -38,6 +39,9 @@ class SettingsRepository(private val context: Context) {
             ?.let { name -> RecordingMode.entries.firstOrNull { it.name == name } }
             ?: RecordingMode.AUDIO_AND_VIDEO
         val separateAudio = prefs[Keys.RECORD_AUDIO_SEPARATELY] ?: false
+        val audioSource = prefs[Keys.AUDIO_CAPTURE_SOURCE]
+            ?.let { name -> AudioCaptureSource.entries.firstOrNull { it.name == name } }
+            ?: if (mode == RecordingMode.VIDEO_ONLY) AudioCaptureSource.NONE else AudioCaptureSource.BOTH
 
         ClotchSettings(
             resolution = prefs[Keys.RESOLUTION]
@@ -59,8 +63,9 @@ class SettingsRepository(private val context: Context) {
                 ?.let { name -> VideoFormat.entries.firstOrNull { it.name == name } }
                 ?: VideoFormat.MP4,
             recordingMode = mode,
+            audioCaptureSource = audioSource,
             recordAudioSeparately = separateAudio,
-            recordMicAudio = mode == RecordingMode.AUDIO_AND_VIDEO || separateAudio,
+            recordMicAudio = (mode == RecordingMode.AUDIO_AND_VIDEO && audioSource != AudioCaptureSource.GAME_ONLY) || separateAudio,
             showQuickNotification = prefs[Keys.SHOW_QUICK_NOTIFICATION] ?: true,
             gameName = prefs[Keys.GAME_NAME]?.takeIf { it.isNotBlank() } ?: "Mobile Game",
             discordRpcEnabled = prefs[Keys.DISCORD_RPC_ENABLED] ?: true,
@@ -96,8 +101,26 @@ class SettingsRepository(private val context: Context) {
     suspend fun setRecordingMode(mode: RecordingMode) {
         context.clotchDataStore.edit {
             it[Keys.RECORDING_MODE] = mode.name
+            val existingSource = it[Keys.AUDIO_CAPTURE_SOURCE]
+                ?.let { name -> AudioCaptureSource.entries.firstOrNull { s -> s.name == name } }
+            if (mode == RecordingMode.AUDIO_AND_VIDEO && (existingSource == null || existingSource == AudioCaptureSource.NONE)) {
+                it[Keys.AUDIO_CAPTURE_SOURCE] = AudioCaptureSource.BOTH.name
+            }
             it[Keys.RECORD_MIC_AUDIO] = mode == RecordingMode.AUDIO_AND_VIDEO ||
                 (it[Keys.RECORD_AUDIO_SEPARATELY] ?: false)
+        }
+    }
+
+    suspend fun setAudioCaptureSource(source: AudioCaptureSource) {
+        context.clotchDataStore.edit {
+            it[Keys.AUDIO_CAPTURE_SOURCE] = source.name
+            if (source == AudioCaptureSource.NONE) {
+                it[Keys.RECORDING_MODE] = RecordingMode.VIDEO_ONLY.name
+                it[Keys.RECORD_MIC_AUDIO] = it[Keys.RECORD_AUDIO_SEPARATELY] ?: false
+            } else {
+                it[Keys.RECORDING_MODE] = RecordingMode.AUDIO_AND_VIDEO.name
+                it[Keys.RECORD_MIC_AUDIO] = source == AudioCaptureSource.MIC_ONLY || source == AudioCaptureSource.BOTH
+            }
         }
     }
 
@@ -118,6 +141,11 @@ class SettingsRepository(private val context: Context) {
                 RecordingMode.AUDIO_AND_VIDEO.name
             } else {
                 RecordingMode.VIDEO_ONLY.name
+            }
+            it[Keys.AUDIO_CAPTURE_SOURCE] = if (enabled) {
+                AudioCaptureSource.BOTH.name
+            } else {
+                AudioCaptureSource.NONE.name
             }
         }
     }

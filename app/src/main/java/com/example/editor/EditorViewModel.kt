@@ -94,11 +94,11 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     val chromaPreviewBitmap: StateFlow<Bitmap?> = _chromaPreviewBitmap.asStateFlow()
 
     val exoPlayer: ExoPlayer = ExoPlayer.Builder(application).build()
-    private val bgmPreviewPlayer: ExoPlayer = ExoPlayer.Builder(application).build()
+    private val audioPreviewPlayers = mutableMapOf<String, ExoPlayer>()
+    private val audioPlayerSignatures = mutableMapOf<String, String>()
 
     private var dragInitialSnapshot: EditorProject? = null
     private var lastLoadedSignature: String = ""
-    private var lastLoadedAudioSignature: String = ""
     private var playbackTickerJob: Job? = null
     private var voiceoverTickerJob: Job? = null
     private var exportJob: Job? = null
@@ -109,17 +109,18 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
             override fun onIsPlayingChanged(isPlaying: Boolean) {
                 _isPlaying.value = isPlaying
                 if (isPlaying) {
+                    syncAudioPreviewToTimelineMs(_project.value.playheadMs)
                     startPlaybackTicker()
                 } else {
                     stopPlaybackTicker()
-                    bgmPreviewPlayer.pause()
+                    audioPreviewPlayers.values.forEach { it.pause() }
                 }
             }
 
             override fun onPlaybackStateChanged(playbackState: Int) {
                 if (playbackState == Player.STATE_ENDED) {
                     _isPlaying.value = false
-                    bgmPreviewPlayer.pause()
+                    audioPreviewPlayers.values.forEach { it.pause() }
                     seekTo(0L)
                 }
             }
@@ -150,25 +151,57 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
             _isBusy.value = true
             try {
                 val info = FFmpegEditorEngine.probeMedia(app, uri, fallbackName)
+                val companionTracks = app.recordingController.clipsRepository
+                    .findCompanionAudioTracks(info.displayName)
+                val cur = _project.value
+                val insertionStartMs = cur.totalVideoDurationMs
+
+                val companionAudioClips = companionTracks.map { track ->
+                    val resolvedDuration = if (track.durationMs > 250L) {
+                        track.durationMs
+                    } else {
+                        FFmpegEditorEngine.probeMedia(app, track.uri, track.kind.label).durationMs
+                    }.coerceAtLeast(info.durationMs.coerceAtMost(500L))
+                    TimelineAudioClip(
+                        sourceUri = track.uri,
+                        displayName = track.kind.label,
+                        kind = track.kind,
+                        timelineStartMs = insertionStartMs,
+                        sourceDurationMs = resolvedDuration,
+                        trimStartMs = 0L,
+                        trimEndMs = resolvedDuration
+                    )
+                }
+
+                val hasSeparatedGameTrack = companionAudioClips.any {
+                    it.kind == AudioClipKind.GAME || it.kind == AudioClipKind.EXTRACTED
+                }
+
                 val newClip = TimelineVideoClip(
                     sourceUri = uri,
                     displayName = info.displayName,
                     sourceDurationMs = info.durationMs,
                     trimStartMs = 0L,
                     trimEndMs = info.durationMs,
+                    audioDetached = hasSeparatedGameTrack,
                     width = info.width,
                     height = info.height
                 )
-                val cur = _project.value
+
                 val updated = cur.copy(
                     videoClips = cur.videoClips + newClip,
+                    audioClips = cur.audioClips + companionAudioClips,
                     selectedVideoClipId = newClip.id,
                     selectedAudioClipId = null,
                     selectedOverlayId = null,
                     selectedStickerId = null
                 )
                 updateProject(updated, recordUndo = true)
-                showToast("Added ${info.displayName}")
+                if (companionAudioClips.isNotEmpty()) {
+                    showToast("Loaded ${info.displayName} + ${companionAudioClips.size} separate audio track(s)")
+                } else {
+                    showToast("Added ${info.displayName}")
+                }
             } catch (t: Throwable) {
                 CrashLogger.logError("EditorViewModel.importVideoUri", "Failed to import $uri", t)
                 showToast("Failed to import clip")
@@ -223,20 +256,18 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
         if (_project.value.videoClips.isEmpty()) return
         if (exoPlayer.isPlaying) {
             exoPlayer.pause()
-            bgmPreviewPlayer.pause()
+            audioPreviewPlayers.values.forEach { it.pause() }
         } else {
             syncExoPlayerToTimelineMs(_project.value.playheadMs)
             syncAudioPreviewToTimelineMs(_project.value.playheadMs)
             exoPlayer.play()
-            if (_project.value.audioClips.isNotEmpty()) {
-                bgmPreviewPlayer.play()
-            }
+            playActiveAudioTracksAt(_project.value.playheadMs)
         }
     }
 
     fun pausePlayback() {
         if (exoPlayer.isPlaying) exoPlayer.pause()
-        if (bgmPreviewPlayer.isPlaying) bgmPreviewPlayer.pause()
+        audioPreviewPlayers.values.forEach { if (it.isPlaying) it.pause() }
     }
 
     fun seekTo(timelineMs: Long) {
@@ -487,8 +518,13 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
             return
         }
         val aId = cur.selectedAudioClipId ?: return
+        toggleAudioTrackMute(aId)
+    }
+
+    fun toggleAudioTrackMute(audioId: String) {
+        val cur = _project.value
         val updatedAudio = cur.audioClips.map {
-            if (it.id == aId) it.copy(isMuted = !it.isMuted) else it
+            if (it.id == audioId) it.copy(isMuted = !it.isMuted) else it
         }
         updateProject(cur.copy(audioClips = updatedAudio), true)
     }
@@ -1162,28 +1198,33 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
 
     @OptIn(UnstableApi::class)
     private fun syncAudioPreviewIfNeeded(project: EditorProject) {
-        val audioSig = project.audioClips.joinToString("|") {
-            "${it.id}:${it.sourceUri}:${it.trimStartMs}:${it.trimEndMs}"
+        val activeIds = project.audioClips.map { it.id }.toSet()
+        val staleIds = audioPreviewPlayers.keys.filter { it !in activeIds }
+        staleIds.forEach { staleId ->
+            audioPreviewPlayers.remove(staleId)?.release()
+            audioPlayerSignatures.remove(staleId)
         }
-        if (audioSig == lastLoadedAudioSignature) return
-        lastLoadedAudioSignature = audioSig
 
-        val primaryAudio = project.audioClips.firstOrNull()
-        if (primaryAudio == null) {
-            bgmPreviewPlayer.clearMediaItems()
-            return
-        }
-        val item = MediaItem.Builder()
-            .setUri(primaryAudio.sourceUri)
-            .setClippingConfiguration(
-                MediaItem.ClippingConfiguration.Builder()
-                    .setStartPositionMs(primaryAudio.trimStartMs)
-                    .setEndPositionMs(primaryAudio.trimEndMs)
+        project.audioClips.forEach { audio ->
+            val sig = "${audio.sourceUri}:${audio.trimStartMs}:${audio.trimEndMs}"
+            if (audioPlayerSignatures[audio.id] != sig) {
+                val player = audioPreviewPlayers.getOrPut(audio.id) {
+                    ExoPlayer.Builder(app).build()
+                }
+                audioPlayerSignatures[audio.id] = sig
+                val item = MediaItem.Builder()
+                    .setUri(audio.sourceUri)
+                    .setClippingConfiguration(
+                        MediaItem.ClippingConfiguration.Builder()
+                            .setStartPositionMs(audio.trimStartMs)
+                            .setEndPositionMs(audio.trimEndMs)
+                            .build()
+                    )
                     .build()
-            )
-            .build()
-        bgmPreviewPlayer.setMediaItem(item)
-        bgmPreviewPlayer.prepare()
+                player.setMediaItem(item)
+                player.prepare()
+            }
+        }
         applyLivePreviewPlaybackSettings()
     }
 
@@ -1198,12 +1239,32 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     private fun syncAudioPreviewToTimelineMs(timelineMs: Long) {
-        val primary = _project.value.audioClips.firstOrNull() ?: return
-        val offset = timelineMs - primary.timelineStartMs
-        if (offset in 0L until primary.effectiveDurationMs) {
-            bgmPreviewPlayer.seekTo(offset)
-        } else {
-            bgmPreviewPlayer.seekTo(0L)
+        _project.value.audioClips.forEach { audio ->
+            val player = audioPreviewPlayers[audio.id] ?: return@forEach
+            val offset = timelineMs - audio.timelineStartMs
+            if (offset in 0L until audio.effectiveDurationMs) {
+                player.seekTo(offset)
+            } else {
+                player.seekTo(0L)
+            }
+        }
+    }
+
+    private fun playActiveAudioTracksAt(timelineMs: Long) {
+        _project.value.audioClips.forEach { audio ->
+            val player = audioPreviewPlayers[audio.id] ?: return@forEach
+            val inWindow = timelineMs in audio.timelineStartMs until audio.timelineEndMs
+            if (inWindow) {
+                val offset = (timelineMs - audio.timelineStartMs).coerceIn(0L, audio.effectiveDurationMs)
+                if (kotlin.math.abs(player.currentPosition - offset) > 120L) {
+                    player.seekTo(offset)
+                }
+                if (!player.isPlaying) {
+                    player.play()
+                }
+            } else if (player.isPlaying) {
+                player.pause()
+            }
         }
     }
 
@@ -1215,8 +1276,22 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
         val speed = activeClip?.speed?.coerceIn(0.5f, 4.0f) ?: 1.0f
         exoPlayer.volume = vidVol
         exoPlayer.playbackParameters = PlaybackParameters(speed, 1.0f)
-        val audioVol = cur.audioClips.firstOrNull()?.effectiveVolume?.coerceIn(0f, 1f) ?: 0f
-        bgmPreviewPlayer.volume = audioVol
+
+        val isPlayingNow = exoPlayer.isPlaying
+        cur.audioClips.forEach { audio ->
+            val player = audioPreviewPlayers[audio.id] ?: return@forEach
+            val inWindow = cur.playheadMs in audio.timelineStartMs until audio.timelineEndMs
+            player.volume = if (inWindow) audio.effectiveVolume.coerceIn(0f, 1f) else 0f
+            if (isPlayingNow) {
+                if (inWindow && !player.isPlaying) {
+                    val offset = (cur.playheadMs - audio.timelineStartMs).coerceIn(0L, audio.effectiveDurationMs)
+                    player.seekTo(offset)
+                    player.play()
+                } else if (!inWindow && player.isPlaying) {
+                    player.pause()
+                }
+            }
+        }
     }
 
     private fun startPlaybackTicker() {
@@ -1256,7 +1331,9 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
         captionEngine.destroy()
         chromaProcessor.closeAllDetectors()
         exoPlayer.release()
-        bgmPreviewPlayer.release()
+        audioPreviewPlayers.values.forEach { it.release() }
+        audioPreviewPlayers.clear()
+        audioPlayerSignatures.clear()
         thumbnailCache.clear()
     }
 }

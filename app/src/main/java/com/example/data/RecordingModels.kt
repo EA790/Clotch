@@ -61,6 +61,13 @@ enum class RecordingMode(val label: String) {
     VIDEO_ONLY("Video Only")
 }
 
+enum class AudioCaptureSource(val label: String, val shortLabel: String) {
+    GAME_ONLY("Game Audio Only", "Game Audio"),
+    MIC_ONLY("Mic Only", "Mic Audio"),
+    BOTH("Both (Separate Tracks)", "Game + Mic"),
+    NONE("No Audio", "Silent")
+}
+
 data class ClotchSettings(
     val resolution: VideoResolution = VideoResolution.FHD_1080P,
     val fps: FrameRateOption = FrameRateOption.FPS_60,
@@ -69,6 +76,7 @@ data class ClotchSettings(
     val countdown: CountdownOption = CountdownOption.OFF,
     val videoFormat: VideoFormat = VideoFormat.MP4,
     val recordingMode: RecordingMode = RecordingMode.AUDIO_AND_VIDEO,
+    val audioCaptureSource: AudioCaptureSource = AudioCaptureSource.BOTH,
     val recordAudioSeparately: Boolean = false,
     val recordMicAudio: Boolean = true,
     val showQuickNotification: Boolean = true,
@@ -77,8 +85,16 @@ data class ClotchSettings(
     val discordToken: String = "",
     val geminiApiKey: String = ""
 ) {
+    val effectiveAudioSource: AudioCaptureSource
+        get() = when {
+            recordingMode == RecordingMode.VIDEO_ONLY && recordAudioSeparately -> AudioCaptureSource.MIC_ONLY
+            recordingMode == RecordingMode.VIDEO_ONLY -> AudioCaptureSource.NONE
+            audioCaptureSource == AudioCaptureSource.NONE -> AudioCaptureSource.MIC_ONLY
+            else -> audioCaptureSource
+        }
+
     val needsMicPermission: Boolean
-        get() = recordingMode == RecordingMode.AUDIO_AND_VIDEO ||
+        get() = (recordingMode == RecordingMode.AUDIO_AND_VIDEO && audioCaptureSource != AudioCaptureSource.NONE) ||
             (recordingMode == RecordingMode.VIDEO_ONLY && recordAudioSeparately)
 }
 

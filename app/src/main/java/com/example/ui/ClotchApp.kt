@@ -653,6 +653,18 @@ fun ClotchApp(
                                 }
                             }
                         },
+                        onSelectAudioCaptureSource = { source ->
+                            viewModel.setAudioCaptureSource(source)
+                            if (source != com.example.data.AudioCaptureSource.NONE) {
+                                val hasMic = ContextCompat.checkSelfPermission(
+                                    context,
+                                    Manifest.permission.RECORD_AUDIO
+                                ) == PackageManager.PERMISSION_GRANTED
+                                if (!hasMic) {
+                                    micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                                }
+                            }
+                        },
                         onToggleRecordAudioSeparately = { enabled ->
                             viewModel.setRecordAudioSeparately(enabled)
                             if (enabled) {

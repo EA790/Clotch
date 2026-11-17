@@ -1,6 +1,10 @@
 package com.example
 
 import android.net.Uri
+import com.example.data.AudioCaptureSource
+import com.example.data.ClotchSettings
+import com.example.data.CompanionTrackMatcher
+import com.example.data.RecordingMode
 import com.example.data.VideoFormat
 import com.example.editor.engine.FFmpegFilterBuilder
 import com.example.editor.model.AudioClipKind
@@ -211,5 +215,73 @@ class EditorModelsTest {
         assertTrue(vChain.contains("transpose=1"))
         assertTrue(vChain.contains("boxblur=20:3"))
         assertTrue(vChain.contains("flags=lanczos"))
+    }
+
+    @Test
+    fun companionTrackMatcher_identifiesGameChatAndMicByTimestampStem() {
+        val stem = CompanionTrackMatcher.extractClipTimestampStem("clip_20261117_051600.mp4")
+        assertEquals("20261117_051600", stem)
+        assertNull(CompanionTrackMatcher.extractClipTimestampStem("random_video.mp4"))
+
+        assertEquals(
+            AudioClipKind.GAME,
+            CompanionTrackMatcher.classifyCompanionAudio("game_20261117_051600.m4a", stem!!)
+        )
+        assertEquals(
+            AudioClipKind.CHAT,
+            CompanionTrackMatcher.classifyCompanionAudio("discord_20261117_051600.m4a", stem)
+        )
+        assertEquals(
+            AudioClipKind.MIC,
+            CompanionTrackMatcher.classifyCompanionAudio("mic_20261117_051600.m4a", stem)
+        )
+        assertEquals(
+            AudioClipKind.MIC,
+            CompanionTrackMatcher.classifyCompanionAudio("audio_20261117_051600.m4a", stem)
+        )
+        assertNull(
+            CompanionTrackMatcher.classifyCompanionAudio("mic_19990101_000000.m4a", stem)
+        )
+    }
+
+    @Test
+    fun separateAudioTracks_muteAndAdjustVolumeIndependently() {
+        val game = TimelineAudioClip(
+            id = "a_game",
+            sourceUri = Uri.parse("file:///tmp/game.m4a"),
+            displayName = AudioClipKind.GAME.label,
+            kind = AudioClipKind.GAME,
+            sourceDurationMs = 5_000L,
+            volume = 0.8f,
+            isMuted = false
+        )
+        val mic = TimelineAudioClip(
+            id = "a_mic",
+            sourceUri = Uri.parse("file:///tmp/mic.m4a"),
+            displayName = AudioClipKind.MIC.label,
+            kind = AudioClipKind.MIC,
+            sourceDurationMs = 5_000L,
+            volume = 1.4f,
+            isMuted = true
+        )
+        val project = EditorProject(audioClips = listOf(game, mic))
+
+        assertEquals(0.8f, project.audioClips[0].effectiveVolume, 0.001f)
+        assertEquals(0.0f, project.audioClips[1].effectiveVolume, 0.001f)
+
+        val settingsBoth = ClotchSettings(
+            recordingMode = RecordingMode.AUDIO_AND_VIDEO,
+            audioCaptureSource = AudioCaptureSource.BOTH
+        )
+        assertEquals(AudioCaptureSource.BOTH, settingsBoth.effectiveAudioSource)
+        assertTrue(settingsBoth.needsMicPermission)
+
+        val settingsSilent = ClotchSettings(
+            recordingMode = RecordingMode.VIDEO_ONLY,
+            audioCaptureSource = AudioCaptureSource.NONE,
+            recordAudioSeparately = false
+        )
+        assertEquals(AudioCaptureSource.NONE, settingsSilent.effectiveAudioSource)
+        assertFalse(settingsSilent.needsMicPermission)
     }
 }

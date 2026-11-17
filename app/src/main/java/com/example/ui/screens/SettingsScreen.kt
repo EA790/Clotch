@@ -60,6 +60,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
+import com.example.data.AudioCaptureSource
 import com.example.data.BitrateOption
 import com.example.data.ClotchSettings
 import com.example.data.CountdownOption
@@ -98,6 +99,7 @@ fun SettingsScreen(
     onSelectOrientation: (OrientationOption) -> Unit,
     onSelectVideoFormat: (VideoFormat) -> Unit,
     onSelectRecordingMode: (RecordingMode) -> Unit,
+    onSelectAudioCaptureSource: (AudioCaptureSource) -> Unit = {},
     onToggleRecordAudioSeparately: (Boolean) -> Unit,
     onSelectCountdown: (CountdownOption) -> Unit,
     onToggleQuickNotification: (Boolean) -> Unit,
@@ -305,6 +307,48 @@ fun SettingsScreen(
                             accent = SignalEmerald,
                             onClick = { onSelectRecordingMode(mode) },
                             modifier = Modifier.testTag("recording_mode_${mode.name}")
+                        )
+                    }
+                }
+
+                AnimatedVisibility(visible = settings.recordingMode == RecordingMode.AUDIO_AND_VIDEO) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 6.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        OptionGroupLabel("Audio Source")
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            listOf(
+                                AudioCaptureSource.GAME_ONLY,
+                                AudioCaptureSource.MIC_ONLY,
+                                AudioCaptureSource.BOTH
+                            ).forEach { source ->
+                                OptionPill(
+                                    label = source.label,
+                                    selected = settings.effectiveAudioSource == source,
+                                    accent = SignalEmerald,
+                                    onClick = { onSelectAudioCaptureSource(source) },
+                                    modifier = Modifier.testTag("audio_source_${source.name}")
+                                )
+                            }
+                        }
+                        Text(
+                            text = when (settings.effectiveAudioSource) {
+                                AudioCaptureSource.GAME_ONLY ->
+                                    "Captures internal game/app audio (Android 10+) into the clip and Music/Clotch."
+                                AudioCaptureSource.MIC_ONLY ->
+                                    "Captures microphone voice directly into the recorded clip."
+                                AudioCaptureSource.BOTH ->
+                                    "Records Game Audio + Video and saves Microphone as a separate .m4a track for independent timeline volume & mute."
+                                AudioCaptureSource.NONE -> ""
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = TextMuted
                         )
                     }
                 }

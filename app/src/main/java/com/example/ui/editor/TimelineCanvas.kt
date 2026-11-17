@@ -31,11 +31,15 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.CompareArrows
 import androidx.compose.material.icons.filled.GraphicEq
+import androidx.compose.material.icons.filled.HeadsetMic
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MusicNote
+import androidx.compose.material.icons.filled.SportsEsports
 import androidx.compose.material.icons.filled.TextFields
 import androidx.compose.material.icons.filled.VolumeOff
+import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -79,6 +83,8 @@ import com.example.ui.theme.ClotchBlue
 import com.example.ui.theme.ClotchBlueMuted
 import com.example.ui.theme.CrimsonAccent
 import com.example.ui.theme.CrimsonGlow
+import com.example.ui.theme.DiscordBlurple
+import com.example.ui.theme.DiscordBlurpleMuted
 import com.example.ui.theme.ElevatedSlate
 import com.example.ui.theme.HairlineBorder
 import com.example.ui.theme.JetBrainsMonoFamily
@@ -89,6 +95,8 @@ import com.example.ui.theme.SlateCard
 import com.example.ui.theme.TextMuted
 import com.example.ui.theme.TextPrimary
 import com.example.ui.theme.TextSecondary
+import com.example.ui.theme.WarningAmber
+import com.example.ui.theme.WarningAmberMuted
 import java.util.Locale
 import kotlin.math.roundToInt
 import kotlin.math.roundToLong
@@ -109,6 +117,7 @@ fun TimelineCanvas(
     onTrimVideoClip: (clipId: String, newStartMs: Long, newEndMs: Long) -> Unit,
     onMoveVideoClip: (fromIndex: Int, toIndex: Int) -> Unit,
     onMoveAudioClipStart: (audioId: String, newStartMs: Long) -> Unit,
+    onToggleAudioMute: (audioId: String) -> Unit = {},
     onMoveOverlayStart: (overlayId: String, newStartMs: Long) -> Unit = { _, _ -> },
     modifier: Modifier = Modifier
 ) {
@@ -312,6 +321,7 @@ fun TimelineCanvas(
                                     pxPerMs = pxPerMs,
                                     isSelected = audioClip.id == project.selectedAudioClipId,
                                     onSelect = { onSelectAudioClip(audioClip.id) },
+                                    onToggleMute = { onToggleAudioMute(audioClip.id) },
                                     onBeginContinuousEdit = onBeginContinuousEdit,
                                     onCommitContinuousEdit = onCommitContinuousEdit,
                                     onMoveStartMs = { newStartMs ->
@@ -641,18 +651,22 @@ private fun AudioTrackClipRow(
     pxPerMs: Float,
     isSelected: Boolean,
     onSelect: () -> Unit,
+    onToggleMute: () -> Unit,
     onBeginContinuousEdit: () -> Unit,
     onCommitContinuousEdit: () -> Unit,
     onMoveStartMs: (Long) -> Unit
 ) {
     val latestAudio by rememberUpdatedState(audioClip)
     val startDp = (audioClip.timelineStartMs * dpPerMs).dp
-    val widthDp = (audioClip.effectiveDurationMs * dpPerMs).dp.coerceAtLeast(72.dp)
+    val widthDp = (audioClip.effectiveDurationMs * dpPerMs).dp.coerceAtLeast(148.dp)
 
     val (tint, bg, icon) = when (audioClip.kind) {
+        AudioClipKind.GAME -> Triple(ClotchBlue, ClotchBlueMuted, Icons.Filled.SportsEsports)
+        AudioClipKind.CHAT -> Triple(DiscordBlurple, DiscordBlurpleMuted, Icons.Filled.HeadsetMic)
+        AudioClipKind.MIC -> Triple(CrimsonAccent, CrimsonGlow, Icons.Filled.Mic)
         AudioClipKind.EXTRACTED -> Triple(ClotchBlue, ClotchBlueMuted, Icons.Filled.GraphicEq)
         AudioClipKind.BGM -> Triple(SignalEmerald, SignalEmeraldMuted, Icons.Filled.MusicNote)
-        AudioClipKind.VOICEOVER -> Triple(CrimsonAccent, CrimsonGlow, Icons.Filled.Mic)
+        AudioClipKind.VOICEOVER -> Triple(WarningAmber, WarningAmberMuted, Icons.Filled.Mic)
     }
 
     Box(modifier = Modifier.fillMaxWidth().height(48.dp)) {
@@ -660,7 +674,7 @@ private fun AudioTrackClipRow(
             modifier = Modifier
                 .offset(x = startDp)
                 .width(widthDp)
-                .height(44.dp)
+                .height(46.dp)
                 .pointerInput(audioClip.id, pxPerMs) {
                     var startDragMs = latestAudio.timelineStartMs
                     detectHorizontalDragGestures(
@@ -681,39 +695,60 @@ private fun AudioTrackClipRow(
                 }
                 .clickable { onSelect() }
                 .testTag("timeline_audio_clip_${audioClip.id}"),
-            color = bg,
+            color = if (audioClip.isMuted) ElevatedSlate else bg,
             shape = RoundedCornerShape(10.dp),
-            border = BorderStroke(if (isSelected) 2.dp else 1.dp, if (isSelected) TextPrimary else tint)
+            border = BorderStroke(
+                width = if (isSelected) 2.dp else 1.dp,
+                color = if (isSelected) TextPrimary else if (audioClip.isMuted) HairlineBorder else tint
+            )
         ) {
             Row(
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(horizontal = 10.dp),
+                    .padding(start = 10.dp, end = 4.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
                 Icon(
-                    imageVector = if (audioClip.isMuted) Icons.Filled.VolumeOff else icon,
+                    imageVector = icon,
                     contentDescription = audioClip.kind.label,
-                    tint = tint,
+                    tint = if (audioClip.isMuted) TextMuted else tint,
                     modifier = Modifier.size(16.dp)
                 )
-                Text(
-                    text = audioClip.displayName,
-                    style = MaterialTheme.typography.labelMedium,
-                    fontWeight = FontWeight.SemiBold,
-                    color = TextPrimary,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f)
-                )
-                Spacer(modifier = Modifier.width(2.dp))
-                Text(
-                    text = formatTimelineSec(audioClip.effectiveDurationMs),
-                    fontFamily = JetBrainsMonoFamily,
-                    fontSize = 10.sp,
-                    color = TextSecondary
-                )
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = audioClip.displayName,
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = if (audioClip.isMuted) TextSecondary else TextPrimary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        text = if (audioClip.isMuted) {
+                            "MUTED • ${formatTimelineSec(audioClip.effectiveDurationMs)}"
+                        } else {
+                            "${(audioClip.volume * 100).toInt()}% • ${formatTimelineSec(audioClip.effectiveDurationMs)}"
+                        },
+                        fontFamily = JetBrainsMonoFamily,
+                        fontSize = 10.sp,
+                        color = if (audioClip.isMuted) CrimsonAccent else TextSecondary,
+                        maxLines = 1
+                    )
+                }
+                IconButton(
+                    onClick = onToggleMute,
+                    modifier = Modifier
+                        .size(40.dp)
+                        .testTag("audio_track_mute_${audioClip.id}")
+                ) {
+                    Icon(
+                        imageVector = if (audioClip.isMuted) Icons.Filled.VolumeOff else Icons.Filled.VolumeUp,
+                        contentDescription = if (audioClip.isMuted) "Unmute ${audioClip.displayName}" else "Mute ${audioClip.displayName}",
+                        tint = if (audioClip.isMuted) CrimsonAccent else TextPrimary,
+                        modifier = Modifier.size(16.dp)
+                    )
+                }
             }
         }
     }

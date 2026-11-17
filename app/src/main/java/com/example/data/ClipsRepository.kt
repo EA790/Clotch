@@ -8,9 +8,37 @@ import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
 import androidx.core.content.FileProvider
+import com.example.editor.model.AudioClipKind
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
+
+data class CompanionAudioTrack(
+    val uri: Uri,
+    val displayName: String,
+    val kind: AudioClipKind,
+    val durationMs: Long
+)
+
+object CompanionTrackMatcher {
+    private val clipStemRegex = Regex("""^clip_([^.]+)\.[^.]+$""", RegexOption.IGNORE_CASE)
+
+    fun extractClipTimestampStem(videoDisplayName: String): String? {
+        return clipStemRegex.matchEntire(videoDisplayName.trim())?.groupValues?.getOrNull(1)
+    }
+
+    fun classifyCompanionAudio(audioDisplayName: String, stem: String): AudioClipKind? {
+        val baseName = audioDisplayName.trim().substringBeforeLast('.', missingDelimiterValue = audioDisplayName)
+        return when {
+            baseName.equals("game_$stem", ignoreCase = true) -> AudioClipKind.GAME
+            baseName.equals("chat_$stem", ignoreCase = true) ||
+                baseName.equals("discord_$stem", ignoreCase = true) -> AudioClipKind.CHAT
+            baseName.equals("mic_$stem", ignoreCase = true) ||
+                baseName.equals("audio_$stem", ignoreCase = true) -> AudioClipKind.MIC
+            else -> null
+        }
+    }
+}
 
 class ClipsRepository(private val context: Context) {
 
@@ -144,6 +172,97 @@ class ClipsRepository(private val context: Context) {
                 target.exists() && target.delete()
             }
         }.getOrDefault(false)
+    }
+
+    suspend fun findCompanionAudioTracks(videoDisplayName: String): List<CompanionAudioTrack> =
+        withContext(Dispatchers.IO) {
+            val stem = CompanionTrackMatcher.extractClipTimestampStem(videoDisplayName) ?: return@withContext emptyList()
+            val tracks = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                loadCompanionAudioFromMediaStore(stem)
+            } else {
+                loadCompanionAudioFromAppMusicDir(stem)
+            }
+            tracks.sortedBy {
+                when (it.kind) {
+                    AudioClipKind.GAME -> 0
+                    AudioClipKind.CHAT -> 1
+                    AudioClipKind.MIC -> 2
+                    AudioClipKind.EXTRACTED -> 3
+                    AudioClipKind.BGM -> 4
+                    AudioClipKind.VOICEOVER -> 5
+                }
+            }
+        }
+
+    private fun loadCompanionAudioFromMediaStore(stem: String): List<CompanionAudioTrack> {
+        val found = mutableListOf<CompanionAudioTrack>()
+        val projection = arrayOf(
+            MediaStore.Audio.Media._ID,
+            MediaStore.Audio.Media.DISPLAY_NAME,
+            MediaStore.Audio.Media.DURATION
+        )
+        val selection = "${MediaStore.Audio.Media.RELATIVE_PATH} LIKE ? AND ${MediaStore.Audio.Media.IS_PENDING} = 0"
+        val selectionArgs = arrayOf("%Music/Clotch%")
+
+        runCatching {
+            context.contentResolver.query(
+                MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,
+                projection,
+                selection,
+                selectionArgs,
+                null
+            )?.use { cursor ->
+                val idCol = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media._ID)
+                val nameCol = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.DISPLAY_NAME)
+                val durCol = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.DURATION)
+
+                while (cursor.moveToNext()) {
+                    val name = cursor.getString(nameCol) ?: continue
+                    val kind = CompanionTrackMatcher.classifyCompanionAudio(name, stem) ?: continue
+                    val id = cursor.getLong(idCol)
+                    val uri = ContentUris.withAppendedId(
+                        MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,
+                        id
+                    )
+                    found.add(
+                        CompanionAudioTrack(
+                            uri = uri,
+                            displayName = name,
+                            kind = kind,
+                            durationMs = cursor.getLong(durCol).coerceAtLeast(0L)
+                        )
+                    )
+                }
+            }
+        }
+        return found
+    }
+
+    private fun loadCompanionAudioFromAppMusicDir(stem: String): List<CompanionAudioTrack> {
+        val dir = File(context.getExternalFilesDir(Environment.DIRECTORY_MUSIC), "Clotch")
+        if (!dir.exists()) return emptyList()
+        val files = dir.listFiles { file -> file.isFile && file.length() > 0L } ?: return emptyList()
+        val found = mutableListOf<CompanionAudioTrack>()
+        for (file in files) {
+            val kind = CompanionTrackMatcher.classifyCompanionAudio(file.name, stem) ?: continue
+            var durMs = 0L
+            runCatching {
+                val retriever = MediaMetadataRetriever()
+                retriever.setDataSource(file.absolutePath)
+                durMs = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
+                    ?.toLongOrNull() ?: 0L
+                retriever.release()
+            }
+            found.add(
+                CompanionAudioTrack(
+                    uri = Uri.fromFile(file),
+                    displayName = file.name,
+                    kind = kind,
+                    durationMs = durMs
+                )
+            )
+        }
+        return found
     }
 
     fun getShareUri(clip: RecordedClip): Uri = clip.uri

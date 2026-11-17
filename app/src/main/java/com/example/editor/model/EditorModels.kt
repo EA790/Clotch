@@ -17,6 +17,9 @@ enum class EditorAspectRatio(
 }
 
 enum class AudioClipKind(val label: String) {
+    GAME("Game Audio"),
+    CHAT("Discord / Chat"),
+    MIC("Microphone"),
     EXTRACTED("Extracted"),
     BGM("Music"),
     VOICEOVER("Voiceover")

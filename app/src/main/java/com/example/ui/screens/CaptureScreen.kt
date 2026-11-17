@@ -231,9 +231,9 @@ fun CaptureScreen(
                         CaptureSpecChip(activeBitrate, highlighted = false)
                         CaptureSpecChip(settings.orientation.label, highlighted = false)
                         val audioLabel = when {
-                            settings.recordingMode == com.example.data.RecordingMode.AUDIO_AND_VIDEO -> "Audio+Video"
-                            settings.recordAudioSeparately -> "Separate Audio"
-                            else -> "Video Only"
+                            settings.recordingMode == com.example.data.RecordingMode.VIDEO_ONLY && settings.recordAudioSeparately -> "Separate Mic"
+                            settings.recordingMode == com.example.data.RecordingMode.VIDEO_ONLY -> "Video Only"
+                            else -> settings.effectiveAudioSource.shortLabel
                         }
                         CaptureSpecChip(
                             text = audioLabel,
