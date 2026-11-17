@@ -587,4 +587,299 @@ class DiscordRpcClient(private val context: Context) {
             smallText = cleanSmallText
         )
 
- 
+        return activity to signature
+    }
+
+    private fun tickLocked(forceImmediate: Boolean) {
+        if (!rpcEnabled) {
+            if (kizzyRpc != null || DISCORD_RPC_CONNECTED.get()) {
+                closeSocketLocked()
+                lastSentSignature = null
+                _connectionState.value = DiscordConnectionState.Disconnected
+            }
+            return
+        }
+
+        val payload = _currentPresence.value
+        if (payload == null && !allowIdlePresence) {
+            if (kizzyRpc != null || DISCORD_RPC_CONNECTED.get()) {
+                closeSocketLocked()
+                lastSentSignature = null
+                _connectionState.value = DiscordConnectionState.Disconnected
+            }
+            return
+        }
+
+        val token = desiredToken
+        if (!isValidTokenFormat(token)) {
+            closeSocketLocked()
+            return
+        }
+
+        if (token == authFailedToken && !forceImmediate) return
+
+        if (!isNetworkAvailable()) {
+            if (DISCORD_RPC_CONNECTED.get() || kizzyRpc != null) {
+                closeSocketLocked()
+                _connectionState.value = DiscordConnectionState.Error("Discord RPC error: Network unavailable")
+            }
+            return
+        }
+
+        val nowElapsed = SystemClock.elapsedRealtime()
+        if (reassertDeadlineElapsedMs in 1..nowElapsed) {
+            reassertDeadlineElapsedMs = 0L
+            dirty = true
+            lastSentSignature = null
+        }
+
+        if (kizzyRpc == null || activeToken != token) {
+            val canAttemptReconnect = forceImmediate ||
+                lastReconnectElapsedMs == 0L ||
+                (nowElapsed - lastReconnectElapsedMs >= RECONNECT_COOLDOWN_MS)
+            if (!canAttemptReconnect) return
+
+            lastReconnectElapsedMs = nowElapsed
+            closeSocketLocked()
+            _connectionState.value = DiscordConnectionState.Connecting
+
+            try {
+                kizzyRpc = KizzyRPC(token)
+                activeToken = token
+                connectedSinceEpochMs = System.currentTimeMillis()
+                dirty = true
+                lastSentSignature = null
+                warnedWaitingForConnection = false
+            } catch (e: Exception) {
+                handleRpcExceptionLocked(e)
+                return
+            }
+        }
+
+        val rpc = kizzyRpc ?: return
+        val cooldownElapsed = forceImmediate ||
+            lastPushElapsedMs == 0L ||
+            (nowElapsed - lastPushElapsedMs >= MIN_PUSH_COOLDOWN_MS)
+        val keepaliveDue = lastPushElapsedMs == 0L ||
+            (nowElapsed - lastPushElapsedMs >= KEEPALIVE_INTERVAL_MS)
+
+        if (!(dirty && cooldownElapsed) && !keepaliveDue) return
+
+        val effectivePayload = payload ?: buildIdlePayload()
+        val (activity, signature) = buildActivityAndSignature(effectivePayload)
+
+        if (signature != lastSentSignature || keepaliveDue || forceImmediate) {
+            try {
+                pushActivityWithFallback(rpc, activity)
+                DISCORD_RPC_CONNECTED.set(true)
+                lastSentSignature = signature
+                lastPushElapsedMs = SystemClock.elapsedRealtime()
+                dirty = false
+                authFailedToken = ""
+                warnedWaitingForConnection = false
+                _connectionState.value = DiscordConnectionState.Connected(
+                    username = "Discord RPC Active",
+                    activeStatusText = signature.details
+                )
+                if (pendingSuccessToast) {
+                    pendingSuccessToast = false
+                    showToast("Kizzy Discord RPC connected")
+                }
+            } catch (e: Exception) {
+                pendingSuccessToast = false
+                handleRpcExceptionLocked(e)
+            }
+        } else {
+            dirty = false
+        }
+    }
+
+    private fun startWorkerLoop() {
+        workerJob?.cancel()
+        workerJob = scope.launch {
+            while (isActive) {
+                rpcMutex.withLock {
+                    runCatching { tickLocked(forceImmediate = false) }
+                }
+                delay(WORKER_TICK_MS)
+            }
+        }
+    }
+
+    fun setRpcEnabled(enabled: Boolean) {
+        rpcEnabled = enabled
+        setDiscordRpcEnabled(enabled, appContext)
+        if (!enabled) {
+            allowIdlePresence = false
+            scope.launch {
+                rpcMutex.withLock {
+                    closeSocketLocked()
+                    lastSentSignature = null
+                    dirty = false
+                    reassertDeadlineElapsedMs = 0L
+                    _connectionState.value = DiscordConnectionState.Disconnected
+                }
+            }
+        } else {
+            dirty = true
+            lastSentSignature = null
+            lastReconnectElapsedMs = 0L
+        }
+    }
+
+    fun connect(token: String, showSuccessToast: Boolean = false) {
+        val cleanToken = sanitizeToken(token)
+        if (!isValidTokenFormat(cleanToken)) {
+            val msg = "Discord RPC unavailable: Add your Discord token in Settings or Sign In"
+            _connectionState.value = DiscordConnectionState.Error(msg, isAuthError = true)
+            showToast(msg)
+            return
+        }
+
+        if (!isNetworkAvailable()) {
+            val msg = "Discord RPC connection failed: No internet connection"
+            _connectionState.value = DiscordConnectionState.Error(msg)
+            showToast(msg)
+            return
+        }
+
+        desiredToken = cleanToken
+        authFailedToken = ""
+        rpcEnabled = true
+        setDiscordRpcEnabled(true, appContext)
+        allowIdlePresence = true
+        pendingSuccessToast = showSuccessToast
+        dirty = true
+        lastSentSignature = null
+        lastPushElapsedMs = 0L
+        lastReconnectElapsedMs = 0L
+        reassertDeadlineElapsedMs = SystemClock.elapsedRealtime() + REASSERT_DELAY_MS
+
+        scope.launch {
+            rpcMutex.withLock {
+                tickLocked(forceImmediate = true)
+            }
+        }
+    }
+
+    fun disconnect(clearPresence: Boolean = true) {
+        allowIdlePresence = false
+        pendingSuccessToast = false
+        reassertDeadlineElapsedMs = 0L
+        dirty = false
+        if (clearPresence) {
+            _currentPresence.value = null
+            activeSessionKey = ""
+        }
+        scope.launch {
+            rpcMutex.withLock {
+                closeSocketLocked()
+                activeToken = ""
+                lastSentSignature = null
+                _connectionState.value = DiscordConnectionState.Disconnected
+            }
+        }
+    }
+
+    fun updatePresence(
+        payload: DiscordPresencePayload?,
+        rpcEnabled: Boolean,
+        token: String
+    ) {
+        val previousPayload = _currentPresence.value
+        _currentPresence.value = payload
+        this.rpcEnabled = rpcEnabled
+        setDiscordRpcEnabled(rpcEnabled, appContext)
+
+        if (!rpcEnabled) {
+            allowIdlePresence = false
+            reassertDeadlineElapsedMs = 0L
+            dirty = false
+            scope.launch {
+                rpcMutex.withLock {
+                    closeSocketLocked()
+                    lastSentSignature = null
+                    _connectionState.value = DiscordConnectionState.Disconnected
+                }
+            }
+            return
+        }
+
+        val cleanToken = sanitizeToken(token)
+        if (cleanToken.isNotEmpty() && cleanToken != desiredToken) {
+            desiredToken = cleanToken
+            if (authFailedToken != cleanToken) authFailedToken = ""
+            dirty = true
+            lastSentSignature = null
+            lastReconnectElapsedMs = 0L
+        } else if (cleanToken.isEmpty()) {
+            desiredToken = ""
+        }
+
+        if (payload == null) {
+            allowIdlePresence = false
+            activeSessionKey = ""
+            reassertDeadlineElapsedMs = 0L
+            dirty = false
+            scope.launch {
+                rpcMutex.withLock {
+                    closeSocketLocked()
+                    lastSentSignature = null
+                    _connectionState.value = DiscordConnectionState.Disconnected
+                }
+            }
+            return
+        }
+
+        val newSessionKey = computeSessionKey(payload)
+        val sessionChanged = newSessionKey != activeSessionKey
+        if (sessionChanged) {
+            activeSessionKey = newSessionKey
+            sessionStartedEpochMs = if (payload.startedAtEpochMs > 0L) {
+                payload.startedAtEpochMs
+            } else {
+                System.currentTimeMillis()
+            }
+            reassertDeadlineElapsedMs = SystemClock.elapsedRealtime() + REASSERT_DELAY_MS
+        } else if (payload.startedAtEpochMs > 0L && payload.startedAtEpochMs != sessionStartedEpochMs) {
+            sessionStartedEpochMs = payload.startedAtEpochMs
+        }
+
+        if (previousPayload != payload || sessionChanged || kizzyRpc == null) {
+            dirty = true
+        }
+
+        if (!isValidTokenFormat(cleanToken)) {
+            if (isMeaningfulPayload(payload)) {
+                val msg = "Discord RPC skipped: Sign in or add your Discord token"
+                _connectionState.value = DiscordConnectionState.Error(msg, isAuthError = true)
+                showRateLimitedToast(msg)
+            }
+            return
+        }
+
+        if (!isNetworkAvailable()) {
+            val msg = "Discord RPC error: Network unavailable"
+            _connectionState.value = DiscordConnectionState.Error(msg)
+            showRateLimitedToast(msg)
+            return
+        }
+
+        scope.launch {
+            rpcMutex.withLock {
+                tickLocked(forceImmediate = sessionChanged || kizzyRpc == null)
+            }
+        }
+    }
+
+    fun shutdown() {
+        unregisterNetworkMonitor()
+        workerJob?.cancel()
+        workerJob = null
+        runCatching { kizzyRpc?.closeRPC() }
+        kizzyRpc = null
+        DISCORD_RPC_CONNECTED.set(false)
+        _connectionState.value = DiscordConnectionState.Disconnected
+        scope.cancel()
+    }
+}
