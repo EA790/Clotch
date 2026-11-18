@@ -3,11 +3,13 @@ package com.example.ui.screens
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Build
 import android.text.format.Formatter
 import android.util.LruCache
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -48,14 +50,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import coil.compose.AsyncImage
-import coil.request.ImageRequest
 import com.example.data.RecordedClip
 import com.example.ui.components.ClotchCardShape
 import com.example.ui.components.ClotchInnerCardShape
@@ -79,6 +80,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.withContext
 
 @Composable
@@ -436,9 +438,7 @@ private fun ClipItemCard(
                     key2 = clip.sizeBytes
                 ) {
                     if (value == null) {
-                        value = withContext(Dispatchers.IO) {
-                            extractFirstVideoFrame(context, clip.uri, clip.sizeBytes)
-                        }
+                        value = extractFirstVideoFrame(context, clip.uri, clip.sizeBytes)
                     }
                 }
 
@@ -449,12 +449,10 @@ private fun ClipItemCard(
                         .background(CarbonSurface),
                     contentAlignment = Alignment.Center
                 ) {
-                    if (thumbnailBitmap != null) {
-                        AsyncImage(
-                            model = ImageRequest.Builder(context)
-                                .data(thumbnailBitmap)
-                                .crossfade(true)
-                                .build(),
+                    val bmp = thumbnailBitmap
+                    if (bmp != null && !bmp.isRecycled) {
+                        Image(
+                            bitmap = bmp.asImageBitmap(),
                             contentDescription = "Thumbnail for ${clip.displayName}",
                             contentScale = ContentScale.Crop,
                             modifier = Modifier
@@ -610,39 +608,85 @@ private fun ClipMetaPill(label: String, mono: Boolean = false) {
 }
 
 private object ClipsThumbnailCache {
+    @OptIn(ExperimentalCoroutinesApi::class)
+    val decodeDispatcher = Dispatchers.IO.limitedParallelism(1)
+
     private val cache = object : LruCache<String, Bitmap>(6 * 1024) {
-        override fun sizeOf(key: String, value: Bitmap): Int = (value.byteCount / 1024).coerceAtLeast(1)
+        override fun sizeOf(key: String, value: Bitmap): Int = (value.allocationByteCount / 1024).coerceAtLeast(1)
     }
 
-    fun get(uri: Uri, sizeBytes: Long): Bitmap? = cache.get("${uri}_${sizeBytes}")
+    fun get(uri: Uri, sizeBytes: Long): Bitmap? = cache.get("${uri}_${sizeBytes}")?.takeIf { !it.isRecycled }
 
     fun put(uri: Uri, sizeBytes: Long, bitmap: Bitmap) {
         cache.put("${uri}_${sizeBytes}", bitmap)
     }
 }
 
-private fun extractFirstVideoFrame(context: Context, uri: Uri, sizeBytes: Long): Bitmap? {
+private suspend fun extractFirstVideoFrame(context: Context, uri: Uri, sizeBytes: Long): Bitmap? {
     ClipsThumbnailCache.get(uri, sizeBytes)?.let { return it }
-    val retriever = MediaMetadataRetriever()
-    val decoded = try {
-        retriever.setDataSource(context, uri)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
-            retriever.getScaledFrameAtTime(
-                0L,
-                MediaMetadataRetriever.OPTION_CLOSEST_SYNC,
-                224,
-                224
-            ) ?: retriever.getFrameAtTime(0L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
-        } else {
-            retriever.getFrameAtTime(0L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+    val appContext = context.applicationContext
+    return withContext(ClipsThumbnailCache.decodeDispatcher) {
+        ClipsThumbnailCache.get(uri, sizeBytes)?.let { return@withContext it }
+        val retriever = MediaMetadataRetriever()
+        val rawDecoded = try {
+            var pfdOk = false
+            if (uri.scheme.equals("content", ignoreCase = true)) {
+                appContext.contentResolver.openFileDescriptor(uri, "r")?.use { pfd ->
+                    retriever.setDataSource(pfd.fileDescriptor)
+                    pfdOk = true
+                }
+            }
+            if (!pfdOk) {
+                retriever.setDataSource(appContext, uri)
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+                retriever.getScaledFrameAtTime(
+                    0L,
+                    MediaMetadataRetriever.OPTION_CLOSEST_SYNC,
+                    192,
+                    192
+                ) ?: retriever.getFrameAtTime(0L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+            } else {
+                retriever.getFrameAtTime(0L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+            }
+        } catch (_: Throwable) {
+            null
+        } finally {
+            runCatching { retriever.release() }
         }
+        val compact = compactThumbBitmap(rawDecoded, 192, 192)
+        if (compact != null && !compact.isRecycled) {
+            ClipsThumbnailCache.put(uri, sizeBytes, compact)
+        }
+        compact
+    }
+}
+
+private fun compactThumbBitmap(raw: Bitmap?, maxW: Int, maxH: Int): Bitmap? {
+    raw ?: return null
+    if (raw.isRecycled) return null
+    val scale = minOf(
+        maxW.toFloat() / raw.width.coerceAtLeast(1),
+        maxH.toFloat() / raw.height.coerceAtLeast(1),
+        1f
+    )
+    val outW = (raw.width * scale).toInt().coerceAtLeast(32)
+    val outH = (raw.height * scale).toInt().coerceAtLeast(32)
+    if (raw.width <= maxW && raw.height <= maxH && raw.config == Bitmap.Config.RGB_565) {
+        return raw
+    }
+    return try {
+        val compact = Bitmap.createBitmap(outW, outH, Bitmap.Config.RGB_565)
+        Canvas(compact).drawBitmap(
+            raw,
+            android.graphics.Rect(0, 0, raw.width, raw.height),
+            android.graphics.Rect(0, 0, outW, outH),
+            null
+        )
+        raw.recycle()
+        compact
     } catch (_: Throwable) {
+        raw.recycle()
         null
-    } finally {
-        runCatching { retriever.release() }
     }
-    if (decoded != null) {
-        ClipsThumbnailCache.put(uri, sizeBytes, decoded)
-    }
-    return decoded
 }

@@ -36,10 +36,14 @@ import com.example.ClotchApplication
 import com.example.MainActivity
 import com.example.R
 import com.example.data.AudioCaptureSource
+import com.example.data.AudioTrackMode
 import com.example.data.ClotchSettings
 import com.example.data.OrientationOption
 import com.example.data.RecordingMode
 import com.example.data.VideoFormat
+import com.example.diagnostics.CrashLogger
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -67,27 +71,31 @@ class ScreenRecordService : Service() {
         const val EXTRA_PROJECTION_DATA = "extra_projection_data"
     }
 
-    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private val serviceExceptionHandler = CoroutineExceptionHandler { _, throwable ->
+        CrashLogger.logError("ScreenRecordService", "Uncaught service coroutine failure", throwable)
+        controller.showToast("Recording encountered an error; cleanup applied")
+        cleanupAndStopForeground()
+    }
+
+    private val serviceScope =
+        CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate + serviceExceptionHandler)
 
     private lateinit var controller: RecordingController
 
     private var mediaProjection: MediaProjection? = null
     private var virtualDisplay: VirtualDisplay? = null
     private var mediaRecorder: MediaRecorder? = null
-    private var separateAudioRecorder: MediaRecorder? = null
     private var internalAudioCapturer: InternalAudioCapturer? = null
+    private var micPcmCapturer: MicPcmCapturer? = null
 
     private var parcelFileDescriptor: ParcelFileDescriptor? = null
     private var pendingMediaUri: Uri? = null
     private var tempMp4ForPostProcess: File? = null
     private var activeVideoFormat: VideoFormat = VideoFormat.MP4
+    private var activeTrackMode: AudioTrackMode = AudioTrackMode.SEPARATE_AUDIO
     private var activeFileTimestamp: String = ""
     private var outputFileName: String? = null
-    private var captureInternalGameAudio: Boolean = false
-
-    private var audioFileDescriptor: ParcelFileDescriptor? = null
-    private var pendingAudioUri: Uri? = null
-    private var separateAudioFileName: String? = null
+    private var saveCompanionTracks: Boolean = false
 
     private var timerJob: Job? = null
     private var activeSegmentStartMs: Long = 0L
@@ -150,8 +158,9 @@ class ScreenRecordService : Service() {
 
         val settings = controller.settings.value
         activeVideoFormat = settings.videoFormat
+        activeTrackMode = settings.audioTrackMode
 
-        val hasMicPermission = ContextCompat.checkSelfPermission(
+        var hasMicPermission = ContextCompat.checkSelfPermission(
             this,
             Manifest.permission.RECORD_AUDIO
         ) == PackageManager.PERMISSION_GRANTED
@@ -161,7 +170,7 @@ class ScreenRecordService : Service() {
             hasMicPermission &&
             settings.videoFormat != VideoFormat.THREE_GPP
 
-        val wantsGameAudio = (requestedSource == AudioCaptureSource.GAME_ONLY ||
+        val wantsGameAudioInitial = (requestedSource == AudioCaptureSource.GAME_ONLY ||
             requestedSource == AudioCaptureSource.BOTH) && canCaptureGameAudio
 
         if ((requestedSource == AudioCaptureSource.GAME_ONLY || requestedSource == AudioCaptureSource.BOTH) &&
@@ -175,46 +184,37 @@ class ScreenRecordService : Service() {
             controller.showToast(reason)
         }
 
-        val muxMicInVideo = !wantsGameAudio && hasMicPermission &&
-            ((requestedSource == AudioCaptureSource.MIC_ONLY &&
-                !(settings.recordingMode == RecordingMode.VIDEO_ONLY && settings.recordAudioSeparately)) ||
-                requestedSource == AudioCaptureSource.BOTH)
-
-        // Never open two simultaneous MediaRecorder(AudioSource.MIC) sessions
-        val recordSeparateMic = hasMicPermission && !muxMicInVideo && (
-            (wantsGameAudio && requestedSource == AudioCaptureSource.BOTH) ||
-                (settings.recordingMode == RecordingMode.VIDEO_ONLY && settings.recordAudioSeparately)
+        val wantsMicInitial = hasMicPermission && (
+            requestedSource == AudioCaptureSource.MIC_ONLY ||
+                requestedSource == AudioCaptureSource.BOTH ||
+                (!wantsGameAudioInitial && (requestedSource == AudioCaptureSource.GAME_ONLY || requestedSource == AudioCaptureSource.BOTH))
             )
 
-        captureInternalGameAudio = wantsGameAudio
-        val fgsUsesMic = muxMicInVideo || recordSeparateMic || wantsGameAudio
+        val separateMode = settings.audioTrackMode == AudioTrackMode.SEPARATE_AUDIO ||
+            (settings.recordingMode == RecordingMode.VIDEO_ONLY && settings.recordAudioSeparately)
+        saveCompanionTracks = separateMode && (wantsGameAudioInitial || wantsMicInitial)
 
         val notification = buildRecordingNotification(
             settings = settings,
             isPaused = false
         )
 
-        val fgsType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && fgsUsesMic) {
-            ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION or
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
-        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
-        } else {
-            0
-        }
-
-        try {
-            ServiceCompat.startForeground(
-                this,
-                RecordingController.NOTIFICATION_ID,
-                notification,
-                fgsType
-            )
-        } catch (e: Exception) {
-            controller.onServiceError("Failed to start foreground service: ${e.localizedMessage}")
+        val fgsUsesMic = wantsGameAudioInitial || wantsMicInitial
+        val fgsStarted = startForegroundSafely(notification, fgsUsesMic)
+        if (!fgsStarted.first) {
+            controller.onServiceError("Failed to start foreground recording service")
             stopSelf()
             return
         }
+        if (fgsUsesMic && !fgsStarted.second) {
+            // Android 14+ restricted FGS mic start; continue screen capture cleanly without mic crash
+            hasMicPermission = false
+            controller.showToast("Microphone FGS restricted by system; recording screen video")
+        }
+
+        val wantsGameAudio = wantsGameAudioInitial && hasMicPermission
+        val wantsMicAudio = wantsMicInitial && hasMicPermission
+        saveCompanionTracks = separateMode && (wantsGameAudio || wantsMicAudio)
 
         val projectionManager =
             getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
@@ -243,6 +243,15 @@ class ScreenRecordService : Service() {
         val finalFileName = "clip_${fileTimestamp}.${settings.videoFormat.extension}"
         outputFileName = finalFileName
 
+        // Decide whether mic can go straight into MediaRecorder (Normal Audio, Mic-only, MP4)
+        // vs PCM capture (Separate Audio OR Normal Mixed Game+Mic OR MKV).
+        val directMicInMediaRecorder = wantsMicAudio && !wantsGameAudio && !separateMode &&
+            settings.videoFormat != VideoFormat.MKV
+        val usePcmMicCapture = wantsMicAudio && !directMicInMediaRecorder
+        val stageTempMp4 = settings.videoFormat == VideoFormat.MKV ||
+            wantsGameAudio ||
+            usePcmMicCapture
+
         val prepared = prepareRecorderWithFallback(
             fileTimestamp = fileTimestamp,
             finalFileName = finalFileName,
@@ -251,8 +260,8 @@ class ScreenRecordService : Service() {
             height = targetH,
             fps = settings.fps.fps,
             bitrateBps = settings.bitrate.bps,
-            useMic = muxMicInVideo,
-            stageTempMp4 = (settings.videoFormat == VideoFormat.MKV || wantsGameAudio)
+            useMic = directMicInMediaRecorder,
+            stageTempMp4 = stageTempMp4
         )
 
         if (!prepared) {
@@ -261,18 +270,23 @@ class ScreenRecordService : Service() {
             return
         }
 
-        if (recordSeparateMic) {
-            prepareSeparateAudioRecorder(fileTimestamp)
-        }
-
         if (wantsGameAudio && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            val pcmFile = File(cacheDir, "game_${fileTimestamp}.pcm")
-            val capturer = InternalAudioCapturer(pcmFile)
+            val gamePcm = File(cacheDir, "game_${fileTimestamp}.pcm")
+            val capturer = InternalAudioCapturer(gamePcm)
             if (capturer.start(projection)) {
                 internalAudioCapturer = capturer
             } else {
-                captureInternalGameAudio = false
-                controller.showToast("Game audio capture unsupported by active app; saving video + mic")
+                controller.showToast("Game audio capture unavailable; continuing video + mic")
+            }
+        }
+
+        if (usePcmMicCapture) {
+            val micPcm = File(cacheDir, "mic_${fileTimestamp}.pcm")
+            val micCapturer = MicPcmCapturer(micPcm)
+            if (micCapturer.start()) {
+                micPcmCapturer = micCapturer
+            } else {
+                controller.showToast("Microphone unavailable right now; continuing screen recording")
             }
         }
 
@@ -292,16 +306,6 @@ class ScreenRecordService : Service() {
             )
 
             mediaRecorder?.start()
-            if (separateAudioRecorder != null) {
-                runCatching {
-                    separateAudioRecorder?.start()
-                }.onFailure {
-                    releaseSeparateAudioOnly()
-                    closeSeparateAudioHandles(deletePending = true)
-                    separateAudioFileName = null
-                    controller.showToast("Separate mic track skipped; recording video only")
-                }
-            }
             activeSegmentStartMs = SystemClock.elapsedRealtime()
 
             controller.onServiceRecordingStarted(
@@ -315,67 +319,62 @@ class ScreenRecordService : Service() {
             updateNotification(settings = settings, isPaused = false)
             startTimerLoop()
         } catch (e: Exception) {
+            CrashLogger.logError("ScreenRecordService", "Screen recording start failed", e)
             controller.onServiceError("Screen recording failed to start: ${e.localizedMessage}")
             cleanupMediaResources(deletePending = true)
             cleanupAndStopForeground()
         }
     }
 
-    private fun prepareSeparateAudioRecorder(fileTimestamp: String) {
-        val audioName = "mic_${fileTimestamp}.m4a"
-        val recorder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            MediaRecorder(this)
+    private fun startForegroundSafely(
+        notification: Notification,
+        withMicrophone: Boolean
+    ): Pair<Boolean, Boolean> {
+        val preferredType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && withMicrophone) {
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION or
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
         } else {
-            @Suppress("DEPRECATION")
-            MediaRecorder()
+            0
         }
 
-        val configured = runCatching {
-            recorder.setAudioSource(MediaRecorder.AudioSource.MIC)
-            recorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
-            recorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
-            recorder.setAudioEncodingBitRate(128_000)
-            recorder.setAudioSamplingRate(44_100)
+        val firstTry = runCatching {
+            ServiceCompat.startForeground(
+                this,
+                RecordingController.NOTIFICATION_ID,
+                notification,
+                preferredType
+            )
+        }
+        if (firstTry.isSuccess) {
+            return true to withMicrophone
+        }
 
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                val values = ContentValues().apply {
-                    put(MediaStore.Audio.Media.DISPLAY_NAME, audioName)
-                    put(MediaStore.Audio.Media.MIME_TYPE, "audio/mp4")
-                    put(
-                        MediaStore.Audio.Media.RELATIVE_PATH,
-                        "${Environment.DIRECTORY_MUSIC}/Clotch"
-                    )
-                    put(MediaStore.Audio.Media.IS_PENDING, 1)
-                }
-                val uri = contentResolver.insert(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, values)
-                    ?: throw IllegalStateException("Failed to insert MediaStore audio row")
-                val pfd = contentResolver.openFileDescriptor(uri, "w")
-                    ?: throw IllegalStateException("Failed to open audio descriptor")
-                pendingAudioUri = uri
-                audioFileDescriptor = pfd
-                recorder.setOutputFile(pfd.fileDescriptor)
-            } else {
-                val musicDir = File(getExternalFilesDir(Environment.DIRECTORY_MUSIC), "Clotch")
-                if (!musicDir.exists()) musicDir.mkdirs()
-                val outFile = File(musicDir, audioName)
-                recorder.setOutputFile(outFile.absolutePath)
+        if (withMicrophone && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val fallbackTry = runCatching {
+                ServiceCompat.startForeground(
+                    this,
+                    RecordingController.NOTIFICATION_ID,
+                    notification,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+                )
             }
-
-            recorder.prepare()
-            separateAudioRecorder = recorder
-            separateAudioFileName = audioName
-            true
-        }.getOrElse {
-            runCatching { recorder.reset() }
-            runCatching { recorder.release() }
-            closeSeparateAudioHandles(deletePending = true)
-            controller.showToast("Separate audio recorder unavailable on this device")
-            false
+            if (fallbackTry.isSuccess) {
+                CrashLogger.logError(
+                    "ScreenRecordService.FGS",
+                    "Microphone FGS rejected; fell back to MediaProjection FGS only",
+                    firstTry.exceptionOrNull()
+                )
+                return true to false
+            }
         }
-
-        if (!configured) {
-            separateAudioFileName = null
-        }
+        CrashLogger.logError(
+            "ScreenRecordService.FGS",
+            "Unable to start foreground service",
+            firstTry.exceptionOrNull()
+        )
+        return false to false
     }
 
     private fun prepareRecorderWithFallback(
@@ -496,7 +495,6 @@ class ScreenRecordService : Service() {
         format: VideoFormat,
         stageTempMp4: Boolean
     ): Boolean {
-        // MKV or Game Audio multi-track records to a temporary MP4 in cacheDir first, then post-processes via FFmpegKit
         if (stageTempMp4) {
             val tempFile = File(cacheDir, "temp_clip_${fileTimestamp}.mp4")
             if (tempFile.exists()) tempFile.delete()
@@ -556,8 +554,8 @@ class ScreenRecordService : Service() {
         if (isPaused || isStopping || mediaRecorder == null) return
         try {
             mediaRecorder?.pause()
-            runCatching { separateAudioRecorder?.pause() }
             internalAudioCapturer?.setPaused(true)
+            micPcmCapturer?.setPaused(true)
             accumulatedElapsedMs += (SystemClock.elapsedRealtime() - activeSegmentStartMs)
             isPaused = true
             timerJob?.cancel()
@@ -572,8 +570,8 @@ class ScreenRecordService : Service() {
         if (!isPaused || isStopping || mediaRecorder == null) return
         try {
             mediaRecorder?.resume()
-            runCatching { separateAudioRecorder?.resume() }
             internalAudioCapturer?.setPaused(false)
+            micPcmCapturer?.setPaused(false)
             activeSegmentStartMs = SystemClock.elapsedRealtime()
             isPaused = false
             controller.onServiceRecordingResumed(activeSegmentStartMs)
@@ -590,77 +588,81 @@ class ScreenRecordService : Service() {
         timerJob?.cancel()
 
         val savedName = outputFileName
-        val audioName = separateAudioFileName
         val fileStem = activeFileTimestamp
         val recorder = mediaRecorder
-        val audioRec = separateAudioRecorder
         val gameCapturer = internalAudioCapturer
+        val micCapturer = micPcmCapturer
         internalAudioCapturer = null
+        micPcmCapturer = null
 
         val stopSucceeded = if (recorder != null) {
             runCatching {
                 recorder.stop()
                 true
-            }.getOrDefault(false)
-        } else {
-            false
-        }
-
-        val audioStopSucceeded = if (audioRec != null) {
-            runCatching {
-                audioRec.stop()
-                true
+            }.onFailure { t ->
+                CrashLogger.logError("ScreenRecordService.Stop", "MediaRecorder.stop failed", t)
             }.getOrDefault(false)
         } else {
             false
         }
 
         val gamePcmFile = gameCapturer?.stop()
+        val micPcmFile = micCapturer?.stop()
 
         releaseRecorderOnly()
-        releaseSeparateAudioOnly()
         runCatching { virtualDisplay?.release() }
         virtualDisplay = null
         runCatching { mediaProjection?.unregisterCallback(projectionCallback) }
         runCatching { mediaProjection?.stop() }
         mediaProjection = null
 
-        closeSeparateAudioHandles(deletePending = !audioStopSucceeded)
-
         val tempMp4 = tempMp4ForPostProcess
         tempMp4ForPostProcess = null
 
-        val needsPostProcess = (activeVideoFormat == VideoFormat.MKV || gamePcmFile != null || tempMp4 != null)
+        val needsPostProcess = (activeVideoFormat == VideoFormat.MKV ||
+            gamePcmFile != null ||
+            micPcmFile != null ||
+            tempMp4 != null)
+
         if (needsPostProcess && stopSucceeded && tempMp4 != null && tempMp4.exists() && savedName != null) {
-            controller.showToast(
-                when {
-                    gamePcmFile != null && activeVideoFormat == VideoFormat.MKV -> "Saving Game Audio + MKV tracks..."
-                    gamePcmFile != null -> "Saving Game Audio + separate tracks..."
-                    else -> "Remuxing recording to MKV via FFmpeg..."
-                }
-            )
+            val toastMsg = when {
+                saveCompanionTracks && gamePcmFile != null && micPcmFile != null ->
+                    "Saving Video + Game & Mic separate tracks..."
+                saveCompanionTracks ->
+                    "Saving separate audio track + video..."
+                gamePcmFile != null && micPcmFile != null ->
+                    "Mixing Game Audio + Mic into clip..."
+                activeVideoFormat == VideoFormat.MKV ->
+                    "Remuxing recording to MKV..."
+                else -> "Finalizing recording..."
+            }
+            controller.showToast(toastMsg)
+
             serviceScope.launch {
-                val postOk = postProcessAndPublishRecording(
+                val (videoOk, companionMicName) = postProcessAndPublishRecording(
                     tempMp4 = tempMp4,
                     gamePcmFile = gamePcmFile,
+                    micPcmFile = micPcmFile,
                     fileTimestamp = fileStem,
                     finalFileName = savedName,
-                    targetFormat = activeVideoFormat
+                    targetFormat = activeVideoFormat,
+                    publishSeparateTracks = saveCompanionTracks
                 )
                 cleanupAndStopForeground()
                 controller.onServiceRecordingStopped(
-                    savedFileName = if (postOk) savedName else null,
-                    audioFileName = if (audioStopSucceeded) audioName else null
+                    savedFileName = if (videoOk) savedName else null,
+                    audioFileName = companionMicName
                 )
             }
         } else {
-            tempMp4?.delete()
-            gamePcmFile?.delete()
+            runCatching { tempMp4?.delete() }
+            runCatching { gamePcmFile?.delete() }
+            runCatching { micPcmFile?.delete() }
             closeVideoOutputHandles(deletePending = !stopSucceeded)
             cleanupAndStopForeground()
             controller.onServiceRecordingStopped(
                 savedFileName = if (stopSucceeded) savedName else null,
-                audioFileName = if (audioStopSucceeded) audioName else null
+                audioFileName = null
             )
             if (fromSystemCallback && !stopSucceeded) {
                 controller.showToast("Screen capture ended by system")
@@ -671,10 +673,12 @@ class ScreenRecordService : Service() {
     private suspend fun postProcessAndPublishRecording(
         tempMp4: File,
         gamePcmFile: File?,
+        micPcmFile: File?,
         fileTimestamp: String,
         finalFileName: String,
-        targetFormat: VideoFormat
-    ): Boolean = withContext(Dispatchers.IO) {
+        targetFormat: VideoFormat,
+        publishSeparateTracks: Boolean
+    ): Pair<Boolean, String?> = withContext(Dispatchers.IO) {
         val tempGameM4a = if (gamePcmFile != null && gamePcmFile.exists() && gamePcmFile.length() > 0L) {
             File(cacheDir, "game_${fileTimestamp}.m4a").takeIf { outM4a ->
                 GameAudioPostProcessor.encodePcmToM4a(gamePcmFile, outM4a)
@@ -683,15 +687,49 @@ class ScreenRecordService : Service() {
             null
         }
 
-        if (tempGameM4a != null) {
-            saveFileToMusicMediaStore(tempGameM4a, "game_${fileTimestamp}.m4a", "audio/mp4")
+        val tempMicM4a = if (micPcmFile != null && micPcmFile.exists() && micPcmFile.length() > 0L) {
+            File(cacheDir, "mic_${fileTimestamp}.m4a").takeIf { outM4a ->
+                GameAudioPostProcessor.encodePcmToM4a(micPcmFile, outM4a)
+            }
+        } else {
+            null
         }
 
+        var tempMixedM4a: File? = null
+        var publishedMicName: String? = null
         val stagedFinal = File(cacheDir, finalFileName)
         var videoPublished = false
-        return@withContext try {
-            val muxOk = if (tempGameM4a != null) {
-                GameAudioPostProcessor.muxVideoWithGameAudio(tempMp4, tempGameM4a, stagedFinal)
+
+        try {
+            if (publishSeparateTracks) {
+                // Save separate Game Audio and Microphone tracks to Music/Clotch
+                if (tempGameM4a != null) {
+                    saveFileToMusicMediaStore(tempGameM4a, "game_${fileTimestamp}.m4a", "audio/mp4")
+                }
+                if (tempMicM4a != null) {
+                    val micDisplayName = "mic_${fileTimestamp}.m4a"
+                    if (saveFileToMusicMediaStore(tempMicM4a, micDisplayName, "audio/mp4")) {
+                        publishedMicName = micDisplayName
+                    }
+                }
+            }
+
+            // Determine primary audio stream to embed inside the video file itself
+            val primaryVideoAudio: File? = if (publishSeparateTracks) {
+                tempGameM4a ?: tempMicM4a
+            } else {
+                when {
+                    gamePcmFile != null && micPcmFile != null -> {
+                        File(cacheDir, "mixed_${fileTimestamp}.m4a").takeIf { outMixed ->
+                            GameAudioPostProcessor.mixPcmTracksToM4a(gamePcmFile, micPcmFile, outMixed)
+                        }.also { tempMixedM4a = it } ?: tempGameM4a ?: tempMicM4a
+                    }
+                    else -> tempGameM4a ?: tempMicM4a
+                }
+            }
+
+            val muxOk = if (primaryVideoAudio != null) {
+                GameAudioPostProcessor.muxVideoWithAudio(tempMp4, primaryVideoAudio, stagedFinal)
             } else if (targetFormat == VideoFormat.MKV) {
                 val cmd = "-y -i \"${tempMp4.absolutePath}\" -c copy \"${stagedFinal.absolutePath}\""
                 val session = runCatching { FFmpegKit.execute(cmd) }.getOrNull()
@@ -709,7 +747,6 @@ class ScreenRecordService : Service() {
             }
 
             if (!videoPublished && tempMp4.exists() && tempMp4.length() > 0L) {
-                // Emergency fallback: preserve original video in app-external Movies/Clotch
                 val safeFallbackName = finalFileName.replace(".mkv", ".mp4", ignoreCase = true)
                 val fallbackDir = File(getExternalFilesDir(Environment.DIRECTORY_MOVIES), "Clotch")
                 if (!fallbackDir.exists()) fallbackDir.mkdirs()
@@ -719,13 +756,13 @@ class ScreenRecordService : Service() {
                     fallbackDest.exists() && fallbackDest.length() > 0L
                 }.getOrDefault(false)
             }
-            videoPublished
-        } catch (ce: kotlinx.coroutines.CancellationException) {
+            videoPublished to publishedMicName
+        } catch (ce: CancellationException) {
             throw ce
         } catch (t: Throwable) {
-            com.example.diagnostics.CrashLogger.logError(
+            CrashLogger.logError(
                 "ScreenRecordService.PostProcess",
-                "Separate audio post-processing failed; attempting raw video preservation",
+                "Audio post-processing failed; attempting raw video preservation",
                 t
             )
             val fallbackMp4Name = finalFileName.replace(".mkv", ".mp4", ignoreCase = true)
@@ -735,15 +772,18 @@ class ScreenRecordService : Service() {
                 false
             }
             if (!videoPublished) {
-                controller.showToast("Audio separation failed; raw video preserved in cache if needed")
+                controller.showToast("Audio mix failed; raw video preserved if available")
             }
-            videoPublished
+            videoPublished to publishedMicName
         } finally {
             if (videoPublished) {
                 runCatching { tempMp4.delete() }
             }
             runCatching { gamePcmFile?.delete() }
+            runCatching { micPcmFile?.delete() }
             runCatching { tempGameM4a?.delete() }
+            runCatching { tempMicM4a?.delete() }
+            runCatching { tempMixedM4a?.delete() }
             runCatching { stagedFinal.delete() }
         }
     }
@@ -834,9 +874,10 @@ class ScreenRecordService : Service() {
 
     private fun cleanupMediaResources(deletePending: Boolean) {
         releaseRecorderOnly()
-        releaseSeparateAudioOnly()
         internalAudioCapturer?.releaseAndDelete()
         internalAudioCapturer = null
+        micPcmCapturer?.releaseAndDelete()
+        micPcmCapturer = null
         runCatching { virtualDisplay?.release() }
         virtualDisplay = null
 
@@ -848,21 +889,11 @@ class ScreenRecordService : Service() {
         tempMp4ForPostProcess = null
 
         closeVideoOutputHandles(deletePending = deletePending)
-        closeSeparateAudioHandles(deletePending = deletePending)
     }
 
     private fun releaseRecorderOnly() {
         val recorder = mediaRecorder
         mediaRecorder = null
-        if (recorder != null) {
-            runCatching { recorder.reset() }
-            runCatching { recorder.release() }
-        }
-    }
-
-    private fun releaseSeparateAudioOnly() {
-        val recorder = separateAudioRecorder
-        separateAudioRecorder = null
         if (recorder != null) {
             runCatching { recorder.reset() }
             runCatching { recorder.release() }
@@ -881,24 +912,6 @@ class ScreenRecordService : Service() {
             } else {
                 val values = ContentValues().apply {
                     put(MediaStore.Video.Media.IS_PENDING, 0)
-                }
-                runCatching { contentResolver.update(uri, values, null, null) }
-            }
-        }
-    }
-
-    private fun closeSeparateAudioHandles(deletePending: Boolean) {
-        runCatching { audioFileDescriptor?.close() }
-        audioFileDescriptor = null
-
-        val uri = pendingAudioUri
-        pendingAudioUri = null
-        if (uri != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            if (deletePending) {
-                runCatching { contentResolver.delete(uri, null, null) }
-            } else {
-                val values = ContentValues().apply {
-                    put(MediaStore.Audio.Media.IS_PENDING, 0)
                 }
                 runCatching { contentResolver.update(uri, values, null, null) }
             }
@@ -978,7 +991,7 @@ class ScreenRecordService : Service() {
         val statusTitle = if (isPaused) {
             "Clotch Paused • ${activeWidth.coerceAtMost(activeHeight)}p ${activeFps}FPS"
         } else {
-            "Recording ${settings.gameName} • ${activeFps}FPS (${settings.videoFormat.label})"
+            "Recording ${settings.gameName} • ${activeFps}FPS (${settings.audioTrackMode.shortLabel})"
         }
 
         val discordSub = if (settings.discordRpcEnabled) {

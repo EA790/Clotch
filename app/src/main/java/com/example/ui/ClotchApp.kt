@@ -11,7 +11,11 @@ import android.os.Build
 import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -20,16 +24,19 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
@@ -46,13 +53,9 @@ import androidx.compose.material.icons.filled.VideoLibrary
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.ModalNavigationDrawer
-import androidx.compose.material3.NavigationBar
-import androidx.compose.material3.NavigationBarItem
-import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.NavigationDrawerItem
 import androidx.compose.material3.NavigationDrawerItemDefaults
 import androidx.compose.material3.Scaffold
@@ -60,7 +63,6 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
-import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -73,6 +75,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
@@ -501,42 +504,11 @@ fun ClotchApp(
                     ClotchRoute.Clips,
                     ClotchRoute.Settings
                 )
-                NavigationBar(
-                    containerColor = CarbonSurface,
-                    contentColor = TextPrimary,
-                    windowInsets = WindowInsets.navigationBars,
-                    tonalElevation = 0.dp
-                ) {
-                    primaryTabs.forEach { dest ->
-                        val selected = currentRoute == dest.route
-                        NavigationBarItem(
-                            selected = selected,
-                            onClick = { navigateTo(dest) },
-                            icon = {
-                                Icon(
-                                    imageVector = dest.icon,
-                                    contentDescription = dest.label
-                                )
-                            },
-                            label = {
-                                Text(
-                                    text = dest.label,
-                                    style = MaterialTheme.typography.labelSmall,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                            },
-                            modifier = Modifier.testTag("bottom_nav_${dest.route}"),
-                            colors = NavigationBarItemDefaults.colors(
-                                selectedIconColor = ClotchBlue,
-                                selectedTextColor = TextPrimary,
-                                indicatorColor = ClotchBlueMuted,
-                                unselectedIconColor = TextSecondary,
-                                unselectedTextColor = TextSecondary
-                            )
-                        )
-                    }
-                }
+                ClotchBottomNavBar(
+                    tabs = primaryTabs,
+                    currentRoute = currentRoute,
+                    onSelectTab = { dest -> navigateTo(dest) }
+                )
             }
         ) { innerPadding ->
             NavHost(
@@ -692,6 +664,9 @@ fun ClotchApp(
                                 }
                             }
                         },
+                        onSelectAudioTrackMode = { trackMode ->
+                            viewModel.setAudioTrackMode(trackMode)
+                        },
                         onToggleRecordAudioSeparately = { enabled ->
                             viewModel.setRecordAudioSeparately(enabled)
                             if (enabled) {
@@ -772,5 +747,110 @@ fun ClotchApp(
                 }
             }
         )
+    }
+}
+
+@Composable
+private fun ClotchBottomNavBar(
+    tabs: List<ClotchRoute>,
+    currentRoute: String,
+    onSelectTab: (ClotchRoute) -> Unit
+) {
+    val haptic = LocalHapticFeedback.current
+    Surface(
+        color = CarbonSurface,
+        contentColor = TextPrimary,
+        tonalElevation = 0.dp
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .navigationBarsPadding()
+                .height(68.dp)
+                .padding(horizontal = 8.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceEvenly
+        ) {
+            tabs.forEach { dest ->
+                val selected = currentRoute == dest.route
+                val interactionSource = remember { MutableInteractionSource() }
+                val isPressed by interactionSource.collectIsPressedAsState()
+                val scale by animateFloatAsState(
+                    targetValue = when {
+                        isPressed -> 0.86f
+                        selected -> 1.04f
+                        else -> 1.0f
+                    },
+                    animationSpec = spring(
+                        dampingRatio = 0.55f,
+                        stiffness = Spring.StiffnessMediumLow
+                    ),
+                    label = "bottom_nav_scale_${dest.route}"
+                )
+                val pillColor by animateColorAsState(
+                    targetValue = if (selected) ClotchBlueMuted else Color.Transparent,
+                    animationSpec = tween(durationMillis = 160),
+                    label = "bottom_nav_pill_${dest.route}"
+                )
+                val iconColor by animateColorAsState(
+                    targetValue = if (selected) ClotchBlue else TextSecondary,
+                    animationSpec = tween(durationMillis = 160),
+                    label = "bottom_nav_icon_${dest.route}"
+                )
+                val labelColor by animateColorAsState(
+                    targetValue = if (selected) TextPrimary else TextSecondary,
+                    animationSpec = tween(durationMillis = 160),
+                    label = "bottom_nav_label_${dest.route}"
+                )
+
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .defaultMinSize(minHeight = 48.dp)
+                        .graphicsLayer {
+                            scaleX = scale
+                            scaleY = scale
+                        }
+                        .clip(RoundedCornerShape(16.dp))
+                        .clickable(
+                            interactionSource = interactionSource,
+                            indication = androidx.compose.material3.ripple(
+                                bounded = true,
+                                color = ClotchBlue
+                            )
+                        ) {
+                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                            onSelectTab(dest)
+                        }
+                        .testTag("bottom_nav_${dest.route}"),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(50))
+                            .background(pillColor)
+                            .padding(horizontal = 16.dp, vertical = 4.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = dest.icon,
+                            contentDescription = dest.label,
+                            tint = iconColor,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(2.dp))
+                    Text(
+                        text = dest.label,
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
+                        color = labelColor,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+        }
     }
 }

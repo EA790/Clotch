@@ -6,6 +6,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.ClotchApplication
 import com.example.data.AudioCaptureSource
+import com.example.data.AudioTrackMode
 import com.example.data.BitrateOption
 import com.example.data.ClotchSettings
 import com.example.data.CountdownOption
@@ -153,6 +154,12 @@ class ClotchViewModel(application: Application) : AndroidViewModel(application) 
     fun setAudioCaptureSource(source: AudioCaptureSource) {
         viewModelScope.launch {
             settingsRepo.setAudioCaptureSource(source)
+        }
+    }
+
+    fun setAudioTrackMode(trackMode: AudioTrackMode) {
+        viewModelScope.launch {
+            settingsRepo.setAudioTrackMode(trackMode)
         }
     }
 

@@ -62,10 +62,23 @@ enum class RecordingMode(val label: String) {
     VIDEO_ONLY("Video Only")
 }
 
+enum class AudioTrackMode(val label: String, val shortLabel: String, val description: String) {
+    SEPARATE_AUDIO(
+        "Separate Audio",
+        "Separate",
+        "Video + Game Audio + Mic recorded as separate tracks"
+    ),
+    NORMAL_AUDIO(
+        "Normal Audio",
+        "Normal",
+        "Video + Game Audio + Mic mixed into one track"
+    )
+}
+
 enum class AudioCaptureSource(val label: String, val shortLabel: String) {
     GAME_ONLY("Game Audio Only", "Game Audio"),
     MIC_ONLY("Mic Only", "Mic Audio"),
-    BOTH("Both (Separate Tracks)", "Game + Mic"),
+    BOTH("Both (Game + Mic)", "Game + Mic"),
     NONE("No Audio", "Silent")
 }
 
@@ -79,7 +92,8 @@ data class ClotchSettings(
     val videoFormat: VideoFormat = VideoFormat.MP4,
     val recordingMode: RecordingMode = RecordingMode.AUDIO_AND_VIDEO,
     val audioCaptureSource: AudioCaptureSource = AudioCaptureSource.BOTH,
-    val recordAudioSeparately: Boolean = false,
+    val audioTrackMode: AudioTrackMode = AudioTrackMode.SEPARATE_AUDIO,
+    val recordAudioSeparately: Boolean = true,
     val recordMicAudio: Boolean = true,
     val showQuickNotification: Boolean = true,
     val gameName: String = "Mobile Game",
@@ -94,6 +108,9 @@ data class ClotchSettings(
             audioCaptureSource == AudioCaptureSource.NONE -> AudioCaptureSource.MIC_ONLY
             else -> audioCaptureSource
         }
+
+    val isSeparateAudioActive: Boolean
+        get() = audioTrackMode == AudioTrackMode.SEPARATE_AUDIO || recordAudioSeparately
 
     val needsMicPermission: Boolean
         get() = (recordingMode == RecordingMode.AUDIO_AND_VIDEO && audioCaptureSource != AudioCaptureSource.NONE) ||

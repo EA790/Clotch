@@ -283,5 +283,15 @@ class EditorModelsTest {
         )
         assertEquals(AudioCaptureSource.NONE, settingsSilent.effectiveAudioSource)
         assertFalse(settingsSilent.needsMicPermission)
+
+        val settingsNormal = ClotchSettings(
+            recordingMode = RecordingMode.AUDIO_AND_VIDEO,
+            audioCaptureSource = AudioCaptureSource.BOTH,
+            audioTrackMode = com.example.data.AudioTrackMode.NORMAL_AUDIO,
+            recordAudioSeparately = false
+        )
+        assertEquals(com.example.data.AudioTrackMode.NORMAL_AUDIO, settingsNormal.audioTrackMode)
+        assertFalse(settingsNormal.isSeparateAudioActive)
+        assertTrue(settingsNormal.needsMicPermission)
     }
 }

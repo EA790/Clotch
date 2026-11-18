@@ -36,6 +36,8 @@ import androidx.compose.material.icons.automirrored.filled.Redo
 import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material.icons.filled.AddPhotoAlternate
 import androidx.compose.material.icons.filled.AutoFixHigh
+import androidx.compose.material.icons.filled.ChevronLeft
+import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.ContentCut
 import androidx.compose.material.icons.filled.CropRotate
@@ -322,8 +324,21 @@ fun EditorScreen(
                 ) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
+                        TactileIconButton(
+                            onClick = { editorViewModel.stepFrame(-1) },
+                            enabled = project.videoClips.isNotEmpty(),
+                            hapticType = HapticFeedbackType.TextHandleMove,
+                            modifier = Modifier.testTag("editor_step_back_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.ChevronLeft,
+                                contentDescription = "Previous frame",
+                                tint = if (project.videoClips.isNotEmpty()) TextSecondary else TextMuted
+                            )
+                        }
+
                         TactileSurface(
                             onClick = { editorViewModel.togglePlayPause() },
                             enabled = project.videoClips.isNotEmpty(),
@@ -344,6 +359,20 @@ fun EditorScreen(
                             }
                         }
 
+                        TactileIconButton(
+                            onClick = { editorViewModel.stepFrame(1) },
+                            enabled = project.videoClips.isNotEmpty(),
+                            hapticType = HapticFeedbackType.TextHandleMove,
+                            modifier = Modifier.testTag("editor_step_forward_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.ChevronRight,
+                                contentDescription = "Next frame",
+                                tint = if (project.videoClips.isNotEmpty()) TextSecondary else TextMuted
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.width(4.dp))
                         EditorPlayheadTimecodeText(
                             playheadMsFlow = editorViewModel.playheadMs,
                             totalDurationMs = project.totalTimelineDurationMs
@@ -459,6 +488,7 @@ fun EditorScreen(
                 thumbnailCache = editorViewModel.thumbnailCache,
                 isPlaying = isPlaying,
                 onSeekTo = { editorViewModel.seekTo(it) },
+                onScrubFinished = { editorViewModel.finishScrubbing() },
                 onSelectVideoClip = { editorViewModel.selectVideoClip(it) },
                 onSelectAudioClip = { editorViewModel.selectAudioClip(it) },
                 onSelectOverlay = { ovId ->

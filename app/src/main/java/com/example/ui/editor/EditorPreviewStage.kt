@@ -253,7 +253,8 @@ fun EditorPreviewStage(
                             inflated.apply {
                                 useController = false
                                 resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
-                                setKeepContentOnPlayerReset(false)
+                                setShowBuffering(PlayerView.SHOW_BUFFERING_NEVER)
+                                setKeepContentOnPlayerReset(isEditorActive)
                                 layoutParams = ViewGroup.LayoutParams(
                                     ViewGroup.LayoutParams.MATCH_PARENT,
                                     ViewGroup.LayoutParams.MATCH_PARENT
@@ -265,6 +266,7 @@ fun EditorPreviewStage(
                         },
                         update = { pv ->
                             playerViewRef = pv
+                            pv.setKeepContentOnPlayerReset(isEditorActive)
                             val targetPlayer = if (isEditorActive) exoPlayer else null
                             pv.visibility = if (isEditorActive) View.VISIBLE else View.INVISIBLE
                             if (pv.player !== targetPlayer) {

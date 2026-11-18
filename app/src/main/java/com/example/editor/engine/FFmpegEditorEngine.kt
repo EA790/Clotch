@@ -67,7 +67,16 @@ object FFmpegEditorEngine {
 
             val retriever = MediaMetadataRetriever()
             try {
-                retriever.setDataSource(context, uri)
+                var pfdOpened = false
+                if (uri.scheme.equals("content", ignoreCase = true)) {
+                    context.contentResolver.openFileDescriptor(uri, "r")?.use { pfd ->
+                        retriever.setDataSource(pfd.fileDescriptor)
+                        pfdOpened = true
+                    }
+                }
+                if (!pfdOpened) {
+                    retriever.setDataSource(context, uri)
+                }
                 durationMs = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
                     ?.toLongOrNull() ?: 0L
                 val rawW = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)
@@ -91,6 +100,39 @@ object FFmpegEditorEngine {
                 CrashLogger.logError("FFmpegEditorEngine.probeMedia", "Retriever probe failed for $uri", t)
             } finally {
                 runCatching { retriever.release() }
+            }
+
+            // Fast header-only MediaExtractor probe (zero file copy!) before falling back to FFprobeKit
+            if (durationMs <= 0L || !hasAudio) {
+                val extractor = android.media.MediaExtractor()
+                try {
+                    extractor.setDataSource(context, uri, null)
+                    for (i in 0 until extractor.trackCount) {
+                        val fmt = extractor.getTrackFormat(i)
+                        val mime = fmt.getString(android.media.MediaFormat.KEY_MIME).orEmpty()
+                        if (durationMs <= 0L && fmt.containsKey(android.media.MediaFormat.KEY_DURATION)) {
+                            val durUs = fmt.getLong(android.media.MediaFormat.KEY_DURATION)
+                            if (durUs > 0L) durationMs = (durUs / 1000L).coerceAtLeast(durationMs)
+                        }
+                        if (mime.startsWith("video/")) {
+                            if (fmt.containsKey(android.media.MediaFormat.KEY_WIDTH) &&
+                                fmt.containsKey(android.media.MediaFormat.KEY_HEIGHT)
+                            ) {
+                                val extW = fmt.getInteger(android.media.MediaFormat.KEY_WIDTH)
+                                val extH = fmt.getInteger(android.media.MediaFormat.KEY_HEIGHT)
+                                if (extW > 0 && extH > 0) {
+                                    width = extW
+                                    height = extH
+                                }
+                            }
+                        } else if (mime.startsWith("audio/")) {
+                            hasAudio = true
+                        }
+                    }
+                } catch (_: Throwable) {
+                } finally {
+                    runCatching { extractor.release() }
+                }
             }
 
             if (durationMs <= 0L) {

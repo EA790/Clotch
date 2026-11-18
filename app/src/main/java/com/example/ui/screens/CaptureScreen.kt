@@ -250,6 +250,12 @@ fun CaptureScreen(
                             icon = if (settings.needsMicPermission) Icons.Filled.Mic else Icons.Filled.MicOff,
                             highlighted = false
                         )
+                        if (settings.recordingMode == RecordingMode.AUDIO_AND_VIDEO) {
+                            CaptureSpecChip(
+                                text = settings.audioTrackMode.label,
+                                highlighted = settings.audioTrackMode == com.example.data.AudioTrackMode.SEPARATE_AUDIO
+                            )
+                        }
                     }
 
                     if (recorderState is RecorderState.Error) {

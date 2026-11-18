@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -68,7 +69,10 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
@@ -107,6 +111,8 @@ import com.example.ui.theme.WarningAmber
 import com.example.ui.theme.WarningAmberMuted
 import kotlinx.coroutines.flow.StateFlow
 import java.util.Locale
+import kotlin.math.ceil
+import kotlin.math.floor
 import kotlin.math.roundToInt
 import kotlin.math.roundToLong
 
@@ -117,6 +123,7 @@ fun TimelineCanvas(
     thumbnailCache: EditorThumbnailCache,
     isPlaying: Boolean,
     onSeekTo: (Long) -> Unit,
+    onScrubFinished: () -> Unit = {},
     onSelectVideoClip: (String?) -> Unit,
     onSelectAudioClip: (String?) -> Unit,
     onSelectOverlay: (String?) -> Unit = {},
@@ -136,19 +143,20 @@ fun TimelineCanvas(
     val pxPerSecond = 64f * project.zoomLevel
     val dpPerMs = pxPerSecond / 1000f
     val pxPerMs = with(density) { pxPerSecond.dp.toPx() } / 1000f
-    val rowHorizPadPx = with(density) { 12.dp.toPx() }
+    val trackPadDp = 16.dp
+    val trackPadPx = with(density) { trackPadDp.toPx() }
     val transitionBadgePx = with(density) { 32.dp.toPx() }
 
     val totalMs = project.totalTimelineDurationMs.coerceAtLeast(10_000L)
-    val contentWidthDp: Dp = ((totalMs * dpPerMs) + 160f).dp
+    val contentWidthDp: Dp = ((totalMs * dpPerMs) + 180f).dp
     val latestTotalDuration by rememberUpdatedState(project.totalTimelineDurationMs.coerceAtLeast(1000L))
 
-    // Quantized horizontal viewport bounds to prevent scroll-pixel jitter recompositions
+    // Quantized horizontal viewport bounds to prevent scroll-pixel recomposition jitter
     val visibleWindowPx by remember {
         derivedStateOf {
             val start = scrollState.value
             val viewport = scrollState.viewportSize.coerceAtLeast(1080)
-            val bucket = 160
+            val bucket = 180
             val qStart = (start / bucket) * bucket
             val qEnd = (((start + viewport) / bucket) + 1) * bucket
             qStart.toFloat() to qEnd.toFloat()
@@ -180,36 +188,30 @@ fun TimelineCanvas(
             Box(modifier = Modifier.width(contentWidthDp)) {
                 Column(
                     modifier = Modifier.fillMaxWidth(),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    // Time Ruler (Virtualized to visible viewport)
+                    // Single-Canvas Time Ruler (Zero child composables during scrolling)
                     TimelineRuler(
                         totalMs = totalMs,
                         zoomLevel = project.zoomLevel,
-                        dpPerMs = dpPerMs,
                         pxPerMs = pxPerMs,
+                        trackPadDp = trackPadDp,
                         visibleStartPx = visibleStartPx,
                         visibleEndPx = visibleEndPx,
                         maxSeekMs = latestTotalDuration,
                         onSeekTo = onSeekTo,
+                        onScrubFinished = onScrubFinished,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(28.dp)
+                            .height(24.dp)
                     )
 
-                    // Video Track Header + Continuous Filmstrip Clips
-                    Column(
+                    // Video Filmstrip sits flush right under ruler ticks so the Playhead slices directly over frames
+                    Box(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 12.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                            .padding(horizontal = trackPadDp)
                     ) {
-                        Text(
-                            text = "VIDEO TRACK",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = TextMuted
-                        )
-
                         if (project.videoClips.isEmpty()) {
                             Box(
                                 modifier = Modifier
@@ -229,19 +231,18 @@ fun TimelineCanvas(
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .height(80.dp)
+                                    .height(78.dp)
                                     .clip(RoundedCornerShape(14.dp))
-                                    .background(ObsidianBg.copy(alpha = 0.45f))
+                                    .background(ObsidianBg.copy(alpha = 0.55f))
                                     .padding(vertical = 2.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                var cursorX = rowHorizPadPx
+                                var cursorX = trackPadPx
                                 project.videoClips.forEachIndexed { index, clip ->
                                     val clipWidthDp = (clip.effectiveDurationMs * dpPerMs).dp.coerceAtLeast(64.dp)
                                     val clipWidthPx = with(density) { clipWidthDp.toPx() }
                                     val clipLeftPx = cursorX
-                                    val clipRightPx = clipLeftPx + clipWidthPx
-                                    cursorX = clipRightPx + if (index < project.videoClips.lastIndex) transitionBadgePx else 0f
+                                    cursorX += clipWidthPx + if (index < project.videoClips.lastIndex) transitionBadgePx else 0f
 
                                     VideoTrackClipItem(
                                         clip = clip,
@@ -300,11 +301,11 @@ fun TimelineCanvas(
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(horizontal = 12.dp),
+                                .padding(horizontal = trackPadDp, vertical = 2.dp),
                             verticalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
                             Text(
-                                text = "TEXT, CAPTIONS & STICKERS",
+                                text = "TEXT & CAPTIONS",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = TextMuted
                             )
@@ -335,12 +336,12 @@ fun TimelineCanvas(
                         }
                     }
 
-                    // Audio Tracks (Game / Chat / Mic / BGM / Voiceover)
+                    // Independent Audio Tracks (Game / Chat / Mic / BGM / Voiceover)
                     if (project.audioClips.isNotEmpty()) {
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(horizontal = 12.dp),
+                                .padding(horizontal = trackPadDp, vertical = 2.dp),
                             verticalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
                             Text(
@@ -367,10 +368,17 @@ fun TimelineCanvas(
                     }
                 }
 
-                // InShot-Style Playhead (thin vertical white line + small horizontal top handle)
+                // True InShot / Premiere Playhead Needle: overlaps directly ON TOP of video frames & all tracks
                 TimelinePlayheadNeedle(
                     playheadMsFlow = playheadMsFlow,
-                    dpPerMs = dpPerMs
+                    trackPadPx = trackPadPx,
+                    pxPerMs = pxPerMs,
+                    maxSeekMs = latestTotalDuration,
+                    onSeekTo = onSeekTo,
+                    onScrubFinished = onScrubFinished,
+                    modifier = Modifier
+                        .matchParentSize()
+                        .zIndex(25f)
                 )
             }
         }
@@ -396,49 +404,88 @@ private fun TimelineAutoScrollEffect(
 }
 
 /**
- * InShot-style playhead: small crisp horizontal rounded handle at top + thin 2.dp vertical white line.
+ * InShot/CapCut-style playhead: small top pill handle + thin 2.dp vertical white needle
+ * drawn directly OVER the video filmstrip, overlays, and audio tracks with direct drag scrubbing.
  */
 @Composable
 private fun TimelinePlayheadNeedle(
     playheadMsFlow: StateFlow<Long>,
-    dpPerMs: Float
+    trackPadPx: Float,
+    pxPerMs: Float,
+    maxSeekMs: Long,
+    onSeekTo: (Long) -> Unit,
+    onScrubFinished: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
     val playheadMs by playheadMsFlow.collectAsStateWithLifecycle()
+    val haptic = LocalHapticFeedback.current
     val density = LocalDensity.current
-    val basePadPx = with(density) { 4.dp.toPx() }
-    val pxPerMs = with(density) { (dpPerMs * 1000f).dp.toPx() } / 1000f
+    val latestMaxSeek by rememberUpdatedState(maxSeekMs)
+    val latestPlayheadMs by rememberUpdatedState(playheadMs)
+    val touchHalfWidthPx = with(density) { 14.dp.toPx() }
 
-    Box(
-        modifier = Modifier
-            .offset {
-                IntOffset(
-                    x = (basePadPx + playheadMs * pxPerMs).roundToInt(),
-                    y = 0
+    Box(modifier = modifier) {
+        Box(
+            modifier = Modifier
+                .offset {
+                    IntOffset(
+                        x = (trackPadPx + playheadMs * pxPerMs - touchHalfWidthPx).roundToInt(),
+                        y = 0
+                    )
+                }
+                .width(28.dp)
+                .fillMaxHeight()
+                .pointerInput(pxPerMs) {
+                    var dragStartMs = 0L
+                    var accumulatedPx = 0f
+                    detectHorizontalDragGestures(
+                        onDragStart = {
+                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                            dragStartMs = latestPlayheadMs
+                            accumulatedPx = 0f
+                        },
+                        onHorizontalDrag = { change, dragAmount ->
+                            change.consume()
+                            accumulatedPx += dragAmount
+                            val targetMs = (dragStartMs + (accumulatedPx / pxPerMs).roundToLong())
+                                .coerceIn(0L, latestMaxSeek)
+                            onSeekTo(targetMs)
+                        },
+                        onDragEnd = { onScrubFinished() },
+                        onDragCancel = { onScrubFinished() }
+                    )
+                },
+            contentAlignment = Alignment.TopCenter
+        ) {
+            // Top horizontal rounded cap overlapping the ruler edge
+            Box(
+                modifier = Modifier
+                    .padding(top = 6.dp)
+                    .width(16.dp)
+                    .height(8.dp)
+                    .shadow(6.dp, RoundedCornerShape(4.dp), ambientColor = Color.Black, spotColor = Color.Black)
+                    .clip(RoundedCornerShape(4.dp))
+                    .background(TextPrimary),
+                contentAlignment = Alignment.Center
+            ) {
+                Box(
+                    modifier = Modifier
+                        .width(6.dp)
+                        .height(2.dp)
+                        .clip(RoundedCornerShape(1.dp))
+                        .background(ClotchBlue)
                 )
             }
-            .width(16.dp)
-            .fillMaxHeight()
-            .zIndex(12f),
-        contentAlignment = Alignment.TopCenter
-    ) {
-        // Small horizontal top handle
-        Box(
-            modifier = Modifier
-                .width(16.dp)
-                .height(5.dp)
-                .shadow(4.dp, RoundedCornerShape(3.dp), ambientColor = Color.Black, spotColor = Color.Black)
-                .clip(RoundedCornerShape(3.dp))
-                .background(TextPrimary)
-        )
-        // Thin vertical white needle
-        Box(
-            modifier = Modifier
-                .padding(top = 4.dp)
-                .width(2.dp)
-                .fillMaxHeight()
-                .shadow(4.dp, RoundedCornerShape(1.dp), ambientColor = Color.Black, spotColor = Color.Black)
-                .background(TextPrimary)
-        )
+            // Thin 2.dp crisp white needle extending directly over all frames & tracks below
+            Box(
+                modifier = Modifier
+                    .padding(top = 13.dp)
+                    .width(2.dp)
+                    .fillMaxHeight()
+                    .shadow(4.dp, RoundedCornerShape(1.dp), ambientColor = Color.Black, spotColor = Color.Black)
+                    .background(TextPrimary)
+            )
+        }
     }
 }
 
@@ -446,23 +493,32 @@ private fun TimelinePlayheadNeedle(
 private fun TimelineRuler(
     totalMs: Long,
     zoomLevel: Float,
-    dpPerMs: Float,
     pxPerMs: Float,
+    trackPadDp: Dp,
     visibleStartPx: Float,
     visibleEndPx: Float,
     maxSeekMs: Long,
     onSeekTo: (Long) -> Unit,
+    onScrubFinished: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val haptic = LocalHapticFeedback.current
+    val textMeasurer = rememberTextMeasurer()
     val latestMaxSeek by rememberUpdatedState(maxSeekMs)
+    val labelStyle = remember {
+        TextStyle(
+            fontFamily = JetBrainsMonoFamily,
+            fontSize = 10.sp,
+            color = TextMuted
+        )
+    }
     val stepMs = when {
         zoomLevel >= 2.2f -> 1000L
         zoomLevel >= 1.2f -> 2000L
         else -> 5000L
     }
     val safePxPerMs = pxPerMs.coerceAtLeast(0.001f)
-    val marginPx = 240f
+    val marginPx = 260f
     val startTickMs = (((visibleStartPx - marginPx).coerceAtLeast(0f) / safePxPerMs) / stepMs)
         .toLong()
         .coerceAtLeast(0L) * stepMs
@@ -473,12 +529,13 @@ private fun TimelineRuler(
 
     Box(
         modifier = modifier
-            .padding(horizontal = 12.dp)
+            .padding(horizontal = trackPadDp)
             .pointerInput(pxPerMs) {
                 detectTapGestures { offset ->
                     haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                     val targetMs = (offset.x / pxPerMs).roundToLong().coerceIn(0L, latestMaxSeek)
                     onSeekTo(targetMs)
+                    onScrubFinished()
                 }
             }
             .pointerInput(pxPerMs) {
@@ -493,7 +550,9 @@ private fun TimelineRuler(
                         change.consume()
                         dragMs = (dragMs + (dragAmount / pxPerMs).roundToLong()).coerceIn(0L, latestMaxSeek)
                         onSeekTo(dragMs)
-                    }
+                    },
+                    onDragEnd = { onScrubFinished() },
+                    onDragCancel = { onScrubFinished() }
                 )
             }
     ) {
@@ -505,29 +564,23 @@ private fun TimelineRuler(
                 if (x <= size.width) {
                     drawLine(
                         color = TextMuted.copy(alpha = 0.65f),
-                        start = Offset(x, h - 8f),
+                        start = Offset(x, h - 7f),
                         end = Offset(x, h - 1f),
                         strokeWidth = 2f
                     )
+                    val measured = textMeasurer.measure(
+                        text = formatTimelineSec(t),
+                        style = labelStyle
+                    )
+                    if (x + measured.size.width + 4f <= size.width) {
+                        drawText(
+                            textLayoutResult = measured,
+                            topLeft = Offset(x + 4f, 0f)
+                        )
+                    }
                 }
                 t += stepMs
             }
-        }
-
-        var tick = startTickMs
-        while (tick <= endTickMs) {
-            val tickSnapshot = tick
-            key(tickSnapshot) {
-                val xDp = (tickSnapshot * dpPerMs).dp
-                Text(
-                    text = formatTimelineSec(tickSnapshot),
-                    fontFamily = JetBrainsMonoFamily,
-                    fontSize = 10.sp,
-                    color = TextMuted,
-                    modifier = Modifier.offset(x = xDp + 2.dp, y = 0.dp)
-                )
-            }
-            tick += stepMs
         }
     }
 }
@@ -559,7 +612,14 @@ private fun VideoTrackClipItem(
 
     val thumbCount = ((widthDp.value / 68f).toInt()).coerceIn(1, 120)
     val slotWidthPx = (clipWidthPx / thumbCount.toFloat()).coerceAtLeast(1f)
+    val slotWidthDp = (widthDp / thumbCount.toFloat())
     val clipShape = RoundedCornerShape(12.dp)
+
+    val prefetchPx = 220f
+    val rawFirstSlot = floor(((visibleStartPx - prefetchPx) - clipLeftPx) / slotWidthPx).toInt()
+    val rawLastSlot = ceil(((visibleEndPx + prefetchPx) - clipLeftPx) / slotWidthPx).toInt()
+    val firstVisibleSlot = rawFirstSlot.coerceIn(0, thumbCount)
+    val lastVisibleSlot = rawLastSlot.coerceIn(-1, thumbCount - 1)
 
     val selectionModifier = if (isSelected) {
         Modifier
@@ -616,43 +676,54 @@ private fun VideoTrackClipItem(
             }
             .testTag("timeline_video_clip_${clip.id}")
     ) {
-        // Continuous Filmstrip Thumbnails (zero gap, lazy-loaded for visible viewport tiles)
-        val prefetchPx = 280f
+        // Truly virtualized filmstrip: ONLY render visible thumbnail slots flanked by left/right Spacers
         Row(
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier
+                .fillMaxSize()
+                .background(ObsidianBg),
             horizontalArrangement = Arrangement.spacedBy(0.dp)
         ) {
-            for (slot in 0 until thumbCount) {
-                val slotLeftPx = clipLeftPx + slot * slotWidthPx
-                val slotRightPx = slotLeftPx + slotWidthPx
-                val isTileVisible = slotRightPx >= (visibleStartPx - prefetchPx) &&
-                    slotLeftPx <= (visibleEndPx + prefetchPx)
-
-                Box(
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxHeight()
-                        .background(ObsidianBg)
-                ) {
-                    if (isTileVisible) {
+            if (lastVisibleSlot >= firstVisibleSlot) {
+                if (firstVisibleSlot > 0) {
+                    Spacer(modifier = Modifier.width(slotWidthDp * firstVisibleSlot))
+                }
+                for (slot in firstVisibleSlot..lastVisibleSlot) {
+                    key(slot) {
                         val fraction = (slot + 0.5f) / thumbCount.toFloat()
                         val sampleTimeMs = clip.trimStartMs + (clip.effectiveDurationMs * fraction).toLong()
-                        val bitmap by produceState<Bitmap?>(
-                            initialValue = null,
-                            key1 = clip.sourceUri,
-                            key2 = sampleTimeMs / 500L
-                        ) {
-                            value = thumbnailCache.getFrame(context, clip.sourceUri, sampleTimeMs)
+                        val bucketKey = sampleTimeMs / 500L
+                        val cachedInstant = remember(clip.sourceUri, bucketKey) {
+                            thumbnailCache.peekFrame(clip.sourceUri, sampleTimeMs)
                         }
-                        if (bitmap != null) {
-                            Image(
-                                bitmap = bitmap!!.asImageBitmap(),
-                                contentDescription = null,
-                                contentScale = ContentScale.Crop,
-                                modifier = Modifier.fillMaxSize()
-                            )
+                        val bitmap by produceState<Bitmap?>(
+                            initialValue = cachedInstant,
+                            key1 = clip.sourceUri,
+                            key2 = bucketKey
+                        ) {
+                            if (value == null) {
+                                value = thumbnailCache.getFrame(context, clip.sourceUri, sampleTimeMs)
+                            }
+                        }
+                        Box(
+                            modifier = Modifier
+                                .width(slotWidthDp)
+                                .fillMaxHeight()
+                                .background(ObsidianBg)
+                        ) {
+                            if (bitmap != null && !bitmap!!.isRecycled) {
+                                Image(
+                                    bitmap = bitmap!!.asImageBitmap(),
+                                    contentDescription = null,
+                                    contentScale = ContentScale.Crop,
+                                    modifier = Modifier.fillMaxSize()
+                                )
+                            }
                         }
                     }
+                }
+                val remainingSlots = (thumbCount - 1 - lastVisibleSlot).coerceAtLeast(0)
+                if (remainingSlots > 0) {
+                    Spacer(modifier = Modifier.width(slotWidthDp * remainingSlots))
                 }
             }
         }

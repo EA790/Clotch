@@ -23,7 +23,9 @@ import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material.icons.outlined.AutoAwesome
+import androidx.compose.material.icons.outlined.GraphicEq
 import androidx.compose.material.icons.outlined.Hub
+import androidx.compose.material.icons.outlined.Layers
 import androidx.compose.material.icons.outlined.Mic
 import androidx.compose.material.icons.outlined.Notifications
 import androidx.compose.material.icons.outlined.Tune
@@ -54,11 +56,13 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import com.example.BuildConfig
 import com.example.data.AudioCaptureSource
+import com.example.data.AudioTrackMode
 import com.example.data.BitrateOption
 import com.example.data.ClotchSettings
 import com.example.data.CountdownOption
@@ -105,6 +109,7 @@ fun SettingsScreen(
     onSelectVideoFormat: (VideoFormat) -> Unit,
     onSelectRecordingMode: (RecordingMode) -> Unit,
     onSelectAudioCaptureSource: (AudioCaptureSource) -> Unit = {},
+    onSelectAudioTrackMode: (AudioTrackMode) -> Unit = {},
     onToggleRecordAudioSeparately: (Boolean) -> Unit,
     onSelectCountdown: (CountdownOption) -> Unit,
     onToggleQuickNotification: (Boolean) -> Unit,
@@ -315,8 +320,62 @@ fun SettingsScreen(
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(top = 8.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
+                        OptionGroupLabel("Recording Audio Mode")
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            AudioTrackMode.entries.forEach { mode ->
+                                val isSelected = settings.audioTrackMode == mode
+                                val isSeparate = mode == AudioTrackMode.SEPARATE_AUDIO
+                                TactileSurface(
+                                    onClick = { onSelectAudioTrackMode(mode) },
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .testTag("audio_track_mode_${mode.name}"),
+                                    color = if (isSelected) {
+                                        SignalEmerald.copy(alpha = 0.16f)
+                                    } else {
+                                        CarbonSurface
+                                    },
+                                    shape = ClotchInnerCardShape,
+                                    pressedScale = 0.96f,
+                                    hapticType = HapticFeedbackType.TextHandleMove
+                                ) {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 14.dp, vertical = 12.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = if (isSeparate) Icons.Outlined.Layers else Icons.Outlined.GraphicEq,
+                                            contentDescription = mode.label,
+                                            tint = if (isSelected) SignalEmerald else TextSecondary,
+                                            modifier = Modifier.size(20.dp)
+                                        )
+                                        Column(
+                                            modifier = Modifier.weight(1f),
+                                            verticalArrangement = Arrangement.spacedBy(2.dp)
+                                        ) {
+                                            Text(
+                                                text = mode.label,
+                                                style = MaterialTheme.typography.titleSmall,
+                                                fontWeight = FontWeight.SemiBold,
+                                                color = if (isSelected) TextPrimary else TextSecondary
+                                            )
+                                            Text(
+                                                text = mode.description,
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = TextMuted
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(2.dp))
                         OptionGroupLabel("Audio Source")
                         FlowRow(
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -339,11 +398,23 @@ fun SettingsScreen(
                         Text(
                             text = when (settings.effectiveAudioSource) {
                                 AudioCaptureSource.GAME_ONLY ->
-                                    "Captures internal game/app audio (Android 10+) into the clip and Music/Clotch."
+                                    if (settings.audioTrackMode == AudioTrackMode.SEPARATE_AUDIO) {
+                                        "Captures internal game/app audio (Android 10+) into the clip and Music/Clotch."
+                                    } else {
+                                        "Captures internal game/app audio directly inside the video file."
+                                    }
                                 AudioCaptureSource.MIC_ONLY ->
-                                    "Captures microphone voice directly into the recorded clip."
+                                    if (settings.audioTrackMode == AudioTrackMode.SEPARATE_AUDIO) {
+                                        "Records microphone voice + saves an isolated mic track for the Editor."
+                                    } else {
+                                        "Captures microphone voice directly into the recorded clip."
+                                    }
                                 AudioCaptureSource.BOTH ->
-                                    "Records Game Audio + Video and saves Microphone as a separate .m4a track for independent timeline volume & mute."
+                                    if (settings.audioTrackMode == AudioTrackMode.SEPARATE_AUDIO) {
+                                        "Saves Game Audio + Mic as separate .m4a tracks for independent timeline volume & mute."
+                                    } else {
+                                        "Mixes Game Audio + Microphone cleanly into a single stereo track in your video."
+                                    }
                                 AudioCaptureSource.NONE -> ""
                             },
                             style = MaterialTheme.typography.bodySmall,
