@@ -9,10 +9,12 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.widget.Toast
+import com.example.diagnostics.CrashLogger
 import com.my.kizzyrpc.KizzyRPC
 import com.my.kizzyrpc.model.Activity
 import com.my.kizzyrpc.model.Assets
 import com.my.kizzyrpc.model.Timestamps
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -119,14 +121,19 @@ class DiscordRpcClient(private val context: Context) {
 
     fun connect(token: String, showSuccessToast: Boolean) {
         if (released.get()) return
-        val cleanToken = token.trim()
+        val cleanToken = DiscordProfileManager.sanitizeToken(token)
         desiredToken = cleanToken
         desiredRpcEnabled = true
         manuallyDisconnected = false
         isAuthRejected = false
 
-        if (cleanToken.isEmpty()) {
-            val msg = "Discord RPC unavailable: Add your Discord token in Settings or Sign In"
+        if (!DiscordProfileManager.isHeaderSafeToken(cleanToken)) {
+            val msg = if (cleanToken.isEmpty()) {
+                "Discord RPC unavailable: Add your Discord token in Settings or Sign In"
+            } else {
+                "Discord token invalid: Remove spaces or unsupported characters"
+            }
+            isAuthRejected = cleanToken.isNotEmpty()
             _connectionState.value = DiscordConnectionState.Error(msg, isAuthError = true)
             showToast(msg)
             return
@@ -170,7 +177,7 @@ class DiscordRpcClient(private val context: Context) {
         token: String
     ) {
         if (released.get()) return
-        val cleanToken = token.trim()
+        val cleanToken = DiscordProfileManager.sanitizeToken(token)
         if (cleanToken != desiredToken) {
             isAuthRejected = false
         }
@@ -193,9 +200,13 @@ class DiscordRpcClient(private val context: Context) {
             manuallyDisconnected = false
         }
 
-        if (cleanToken.isEmpty()) {
+        if (!DiscordProfileManager.isHeaderSafeToken(cleanToken)) {
             if (payload != null && (payload.isRecording || payload.detectedAppName != null || payload.isLarkPlayerRunning)) {
-                val msg = "Discord RPC skipped: Sign in or add your Discord token"
+                val msg = if (cleanToken.isEmpty()) {
+                    "Discord RPC skipped: Sign in or add your Discord token"
+                } else {
+                    "Discord token invalid: Remove spaces or unsupported characters"
+                }
                 _connectionState.value = DiscordConnectionState.Error(msg, isAuthError = true)
                 showRateLimitedToast(msg)
             } else {
@@ -332,10 +343,16 @@ class DiscordRpcClient(private val context: Context) {
             if (showSuccessToast) {
                 showToast("Kizzy Discord RPC connected")
             }
-        } catch (e: Exception) {
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (t: Throwable) {
+            CrashLogger.logError("DiscordRpcClient", "KizzyRPC connection or activity push failed", t)
             closeSocketLocked()
-            val detail = e.localizedMessage?.takeIf { it.isNotBlank() } ?: "Kizzy RPC failure"
-            val authFailure = isLikelyAuthError(detail)
+            val detail = t.localizedMessage?.takeIf { it.isNotBlank() }
+                ?: t.cause?.localizedMessage?.takeIf { it.isNotBlank() }
+                ?: "Kizzy RPC failure"
+            val authFailure = isLikelyAuthError(detail) ||
+                isLikelyAuthError(t.cause?.message.orEmpty())
             if (authFailure) {
                 isAuthRejected = true
             }
@@ -396,11 +413,13 @@ class DiscordRpcClient(private val context: Context) {
     }
 
     private fun isNetworkAvailable(): Boolean {
-        val cm = appContext.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
-            ?: return true
-        val network = cm.activeNetwork ?: return false
-        val caps = cm.getNetworkCapabilities(network) ?: return false
-        return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+        return runCatching {
+            val cm = appContext.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+                ?: return true
+            val network = cm.activeNetwork ?: return false
+            val caps = cm.getNetworkCapabilities(network) ?: return false
+            caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+        }.getOrDefault(true)
     }
 
     private fun showRateLimitedToast(message: String) {

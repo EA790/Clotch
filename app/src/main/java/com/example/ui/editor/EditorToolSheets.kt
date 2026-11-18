@@ -1,10 +1,6 @@
 package com.example.ui.editor
 
-import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -22,26 +18,21 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
+import androidx.compose.material.icons.automirrored.filled.VolumeOff
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.AudioFile
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.Movie
-import androidx.compose.material.icons.filled.VolumeOff
-import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -51,8 +42,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.data.RecordedClip
@@ -64,13 +55,19 @@ import com.example.editor.model.TimelineAudioClip
 import com.example.editor.model.TimelineVideoClip
 import com.example.editor.model.TransitionSpec
 import com.example.editor.model.TransitionType
+import com.example.ui.components.ClotchCardShape
+import com.example.ui.components.ClotchInnerCardShape
+import com.example.ui.components.ClotchPillShape
+import com.example.ui.components.TactileIconButton
+import com.example.ui.components.TactileOptionPill
+import com.example.ui.components.TactilePillButton
+import com.example.ui.components.TactileSurface
 import com.example.ui.theme.CarbonSurface
 import com.example.ui.theme.ClotchBlue
 import com.example.ui.theme.ClotchBlueMuted
 import com.example.ui.theme.CrimsonAccent
 import com.example.ui.theme.CrimsonGlow
 import com.example.ui.theme.ElevatedSlate
-import com.example.ui.theme.HairlineBorder
 import com.example.ui.theme.JetBrainsMonoFamily
 import com.example.ui.theme.SignalEmerald
 import com.example.ui.theme.SlateCard
@@ -107,16 +104,15 @@ fun SelectedClipInspectorPanel(
             .fillMaxWidth()
             .testTag("clip_inspector_panel"),
         color = SlateCard,
-        shape = RoundedCornerShape(16.dp),
-        border = BorderStroke(1.dp, HairlineBorder)
+        shape = ClotchCardShape
     ) {
         if (activeTitle == null) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(16.dp),
+                    .padding(18.dp),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 Icon(
                     imageVector = Icons.Filled.AudioFile,
@@ -134,10 +130,9 @@ fun SelectedClipInspectorPanel(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(14.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                // Header with Clip Name + Mute Toggle + Reorder arrows
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
@@ -164,12 +159,10 @@ fun SelectedClipInspectorPanel(
                     }
 
                     if (selectedVideoClip != null && totalVideoClips > 1) {
-                        IconButton(
+                        TactileIconButton(
                             onClick = { onMoveVideoOrder(selectedVideoIndex, selectedVideoIndex - 1) },
                             enabled = selectedVideoIndex > 0,
-                            modifier = Modifier
-                                .minimumInteractiveComponentSize()
-                                .testTag("move_clip_left_button")
+                            modifier = Modifier.testTag("move_clip_left_button")
                         ) {
                             Icon(
                                 imageVector = Icons.AutoMirrored.Filled.ArrowBack,
@@ -177,12 +170,10 @@ fun SelectedClipInspectorPanel(
                                 tint = if (selectedVideoIndex > 0) TextPrimary else TextMuted
                             )
                         }
-                        IconButton(
+                        TactileIconButton(
                             onClick = { onMoveVideoOrder(selectedVideoIndex, selectedVideoIndex + 1) },
                             enabled = selectedVideoIndex < totalVideoClips - 1,
-                            modifier = Modifier
-                                .minimumInteractiveComponentSize()
-                                .testTag("move_clip_right_button")
+                            modifier = Modifier.testTag("move_clip_right_button")
                         ) {
                             Icon(
                                 imageVector = Icons.AutoMirrored.Filled.ArrowForward,
@@ -192,23 +183,20 @@ fun SelectedClipInspectorPanel(
                         }
                     }
 
-                    OutlinedButton(
+                    TactilePillButton(
                         onClick = onToggleMute,
                         modifier = Modifier
                             .height(48.dp)
                             .testTag("toggle_mute_button"),
-                        shape = RoundedCornerShape(12.dp),
-                        border = BorderStroke(
-                            1.dp,
-                            if (activeMuted) CrimsonAccent else HairlineBorder
-                        ),
-                        colors = ButtonDefaults.outlinedButtonColors(
-                            containerColor = if (activeMuted) CrimsonGlow else CarbonSurface,
-                            contentColor = if (activeMuted) CrimsonAccent else TextPrimary
-                        )
+                        containerColor = if (activeMuted) CrimsonGlow else CarbonSurface,
+                        contentColor = if (activeMuted) CrimsonAccent else TextPrimary
                     ) {
                         Icon(
-                            imageVector = if (activeMuted) Icons.Filled.VolumeOff else Icons.Filled.VolumeUp,
+                            imageVector = if (activeMuted) {
+                                Icons.AutoMirrored.Filled.VolumeOff
+                            } else {
+                                Icons.AutoMirrored.Filled.VolumeUp
+                            },
                             contentDescription = if (activeMuted) "Unmute clip" else "Mute clip",
                             modifier = Modifier.size(18.dp)
                         )
@@ -307,20 +295,17 @@ fun SelectedClipInspectorPanel(
 
                 // Extract Audio action for video clips
                 if (selectedVideoClip != null) {
-                    Button(
+                    TactilePillButton(
                         onClick = onExtractAudio,
                         enabled = !selectedVideoClip.audioDetached,
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(48.dp)
                             .testTag("extract_audio_button"),
-                        shape = RoundedCornerShape(12.dp),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = ClotchBlueMuted,
-                            contentColor = ClotchBlue,
-                            disabledContainerColor = ElevatedSlate,
-                            disabledContentColor = TextMuted
-                        )
+                        containerColor = ClotchBlueMuted,
+                        contentColor = ClotchBlue,
+                        disabledContainerColor = ElevatedSlate,
+                        disabledContentColor = TextMuted
                     ) {
                         Icon(
                             imageVector = Icons.Filled.AudioFile,
@@ -352,9 +337,15 @@ fun SavedClipsPickerDialog(
     AlertDialog(
         onDismissRequest = onDismiss,
         containerColor = SlateCard,
+        shape = RoundedCornerShape(24.dp),
         titleContentColor = TextPrimary,
         textContentColor = TextSecondary,
-        title = { Text("Add Saved Clotch Clip") },
+        title = {
+            Text(
+                text = "Add Saved Clotch Clip",
+                style = MaterialTheme.typography.titleLarge
+            )
+        },
         text = {
             if (clips.isEmpty()) {
                 Text(
@@ -370,20 +361,20 @@ fun SavedClipsPickerDialog(
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     items(clips, key = { it.id }) { clip ->
-                        Surface(
+                        TactileSurface(
+                            onClick = { onPickClip(clip) },
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clip(RoundedCornerShape(12.dp))
-                                .clickable { onPickClip(clip) }
                                 .testTag("pick_saved_clip_${clip.id}"),
                             color = CarbonSurface,
-                            shape = RoundedCornerShape(12.dp),
-                            border = BorderStroke(1.dp, HairlineBorder)
+                            shape = ClotchInnerCardShape,
+                            pressedScale = 0.97f,
+                            hapticType = HapticFeedbackType.LongPress
                         ) {
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .padding(12.dp),
+                                    .padding(14.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(10.dp)
                             ) {
@@ -403,7 +394,7 @@ fun SavedClipsPickerDialog(
                                     )
                                     val sec = (clip.durationMs / 1000L).coerceAtLeast(0L)
                                     Text(
-                                        text = "${clip.width}x${clip.height} • ${sec / 60}:${String.format(Locale.US, "%02d", sec % 60)}",
+                                        text = "${clip.width}×${clip.height} • ${sec / 60}:${String.format(Locale.US, "%02d", sec % 60)}",
                                         style = MaterialTheme.typography.bodySmall,
                                         color = TextSecondary
                                     )
@@ -441,6 +432,7 @@ fun ExportEditorDialog(
             if (exportState !is EditorExportState.Exporting) onDismiss()
         },
         containerColor = SlateCard,
+        shape = RoundedCornerShape(24.dp),
         titleContentColor = TextPrimary,
         textContentColor = TextSecondary,
         title = {
@@ -450,7 +442,8 @@ fun ExportEditorDialog(
                     is EditorExportState.Exporting -> "Rendering Timeline..."
                     is EditorExportState.Completed -> "Export Complete"
                     is EditorExportState.Error -> "Export Failed"
-                }
+                },
+                style = MaterialTheme.typography.titleLarge
             )
         },
         text = {
@@ -458,9 +451,12 @@ fun ExportEditorDialog(
                 is EditorExportState.Idle -> {
                     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                         Text("Container Format", style = MaterialTheme.typography.labelMedium, color = TextSecondary)
-                        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
                             listOf(VideoFormat.MP4, VideoFormat.MKV).forEach { fmt ->
-                                ExportChoiceChip(
+                                TactileOptionPill(
                                     label = fmt.label,
                                     selected = selectedFormat == fmt,
                                     onClick = { selectedFormat = fmt }
@@ -469,9 +465,12 @@ fun ExportEditorDialog(
                         }
 
                         Text("Resolution", style = MaterialTheme.typography.labelMedium, color = TextSecondary)
-                        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
                             EditorExportResolution.entries.forEach { res ->
-                                ExportChoiceChip(
+                                TactileOptionPill(
                                     label = res.label,
                                     selected = selectedResolution == res,
                                     onClick = { selectedResolution = res }
@@ -485,14 +484,14 @@ fun ExportEditorDialog(
                             verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
                             listOf(30, 60).forEach { fps ->
-                                ExportChoiceChip(
+                                TactileOptionPill(
                                     label = "$fps FPS",
                                     selected = selectedFps == fps,
                                     onClick = { selectedFps = fps }
                                 )
                             }
                             listOf(8, 16, 24).forEach { mbps ->
-                                ExportChoiceChip(
+                                TactileOptionPill(
                                     label = "$mbps Mbps",
                                     selected = selectedBitrate == mbps,
                                     onClick = { selectedBitrate = mbps }
@@ -508,7 +507,7 @@ fun ExportEditorDialog(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .height(8.dp)
-                                .clip(RoundedCornerShape(4.dp)),
+                                .clip(ClotchPillShape),
                             color = ClotchBlue,
                             trackColor = ElevatedSlate
                         )
@@ -574,7 +573,7 @@ fun ExportEditorDialog(
         confirmButton = {
             when (exportState) {
                 is EditorExportState.Idle -> {
-                    Button(
+                    TactilePillButton(
                         onClick = {
                             onStartExport(
                                 EditorExportConfig(
@@ -586,10 +585,8 @@ fun ExportEditorDialog(
                             )
                         },
                         modifier = Modifier.testTag("confirm_export_button"),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = ClotchBlue,
-                            contentColor = TextPrimary
-                        )
+                        containerColor = ClotchBlue,
+                        contentColor = TextPrimary
                     ) {
                         Text("Render & Save")
                     }
@@ -600,23 +597,19 @@ fun ExportEditorDialog(
                     }
                 }
                 is EditorExportState.Completed -> {
-                    Button(
+                    TactilePillButton(
                         onClick = onOpenClips,
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = ClotchBlue,
-                            contentColor = TextPrimary
-                        )
+                        containerColor = ClotchBlue,
+                        contentColor = TextPrimary
                     ) {
                         Text("View in Clips")
                     }
                 }
                 is EditorExportState.Error -> {
-                    Button(
+                    TactilePillButton(
                         onClick = onDismiss,
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = ElevatedSlate,
-                            contentColor = TextPrimary
-                        )
+                        containerColor = ElevatedSlate,
+                        contentColor = TextPrimary
                     ) {
                         Text("Close")
                     }
@@ -646,9 +639,15 @@ fun TransitionPickerDialog(
     AlertDialog(
         onDismissRequest = onDismiss,
         containerColor = SlateCard,
+        shape = RoundedCornerShape(24.dp),
         titleContentColor = TextPrimary,
         textContentColor = TextSecondary,
-        title = { Text("Clip Transition") },
+        title = {
+            Text(
+                text = "Clip Transition",
+                style = MaterialTheme.typography.titleLarge
+            )
+        },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text("Transition Style", style = MaterialTheme.typography.labelMedium, color = TextSecondary)
@@ -657,7 +656,7 @@ fun TransitionPickerDialog(
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     TransitionType.entries.forEach { t ->
-                        ExportChoiceChip(
+                        TactileOptionPill(
                             label = t.label,
                             selected = selectedType == t,
                             onClick = { selectedType = t }
@@ -680,9 +679,10 @@ fun TransitionPickerDialog(
             }
         },
         confirmButton = {
-            Button(
+            TactilePillButton(
                 onClick = { onApply(TransitionSpec(selectedType, durationMs.toLong())) },
-                colors = ButtonDefaults.buttonColors(containerColor = ClotchBlue, contentColor = TextPrimary)
+                containerColor = ClotchBlue,
+                contentColor = TextPrimary
             ) {
                 Text("Apply")
             }
@@ -693,25 +693,4 @@ fun TransitionPickerDialog(
             }
         }
     )
-}
-
-@Composable
-private fun ExportChoiceChip(
-    label: String,
-    selected: Boolean,
-    onClick: () -> Unit
-) {
-    Surface(
-        onClick = onClick,
-        color = if (selected) ClotchBlueMuted else CarbonSurface,
-        shape = RoundedCornerShape(10.dp),
-        border = BorderStroke(1.dp, if (selected) ClotchBlue else HairlineBorder)
-    ) {
-        Text(
-            text = label,
-            style = MaterialTheme.typography.labelLarge,
-            color = if (selected) ClotchBlue else TextSecondary,
-            modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)
-        )
-    }
 }

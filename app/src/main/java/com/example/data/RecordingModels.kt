@@ -1,6 +1,7 @@
 package com.example.data
 
 import android.net.Uri
+import androidx.compose.runtime.Immutable
 
 enum class VideoResolution(
     val label: String,
@@ -68,6 +69,7 @@ enum class AudioCaptureSource(val label: String, val shortLabel: String) {
     NONE("No Audio", "Silent")
 }
 
+@Immutable
 data class ClotchSettings(
     val resolution: VideoResolution = VideoResolution.FHD_1080P,
     val fps: FrameRateOption = FrameRateOption.FPS_60,
@@ -98,6 +100,7 @@ data class ClotchSettings(
             (recordingMode == RecordingMode.VIDEO_ONLY && recordAudioSeparately)
 }
 
+@Immutable
 data class RecordedClip(
     val id: Long,
     val uri: Uri,

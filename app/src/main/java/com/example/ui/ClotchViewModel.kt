@@ -37,6 +37,7 @@ class ClotchViewModel(application: Application) : AndroidViewModel(application) 
     val settings: StateFlow<ClotchSettings> = controller.settings
     val recorderState: StateFlow<RecorderState> = controller.recorderState
     val clips: StateFlow<List<RecordedClip>> = controller.clips
+    val isLoadingClips: StateFlow<Boolean> = controller.isLoadingClips
     val discordConnectionState: StateFlow<DiscordConnectionState> =
         controller.discordConnectionState
     val discordPresence: StateFlow<DiscordPresencePayload?> =
@@ -216,30 +217,47 @@ class ClotchViewModel(application: Application) : AndroidViewModel(application) 
     fun signInWithDiscordToken(token: String, onComplete: (Boolean) -> Unit = {}) {
         viewModelScope.launch {
             _isFetchingProfile.value = true
-            val result = profileManager.fetchAndSaveProfile(token, isBearerOAuth = false)
-            _isFetchingProfile.value = false
-            if (result.isSuccess) {
-                settingsRepo.setDiscordToken(token)
-                controller.connectDiscordRpc(token)
-                onComplete(true)
-            } else {
+            try {
+                val result = profileManager.fetchAndSaveProfile(token, isBearerOAuth = false)
+                if (result.isSuccess) {
+                    val clean = DiscordProfileManager.sanitizeToken(token)
+                    settingsRepo.setDiscordToken(clean)
+                    controller.connectDiscordRpc(clean)
+                    onComplete(true)
+                } else {
+                    onComplete(false)
+                }
+            } catch (t: Throwable) {
+                showToast("Discord sign-in failed: ${t.localizedMessage ?: "Unknown error"}")
                 onComplete(false)
+            } finally {
+                _isFetchingProfile.value = false
             }
         }
     }
 
-    fun buildOAuthUrlAndSaveClientId(clientId: String): String {
-        viewModelScope.launch {
-            profileManager.saveOAuthClientId(clientId)
+    fun buildOAuthUrlAndSaveClientId(clientId: String): String? {
+        val trimmed = clientId.trim()
+        if (!DiscordProfileManager.isValidOAuthClientId(trimmed)) {
+            showToast("Enter a valid numeric Discord Application Client ID")
+            return null
         }
-        return profileManager.buildOAuthAuthorizeUrl(clientId)
+        viewModelScope.launch {
+            profileManager.saveOAuthClientId(trimmed)
+        }
+        return profileManager.buildOAuthAuthorizeUrl(trimmed)
     }
 
     fun handleOAuthAccessToken(accessToken: String) {
         viewModelScope.launch {
             _isFetchingProfile.value = true
-            profileManager.fetchAndSaveProfile(accessToken, isBearerOAuth = true)
-            _isFetchingProfile.value = false
+            try {
+                profileManager.fetchAndSaveProfile(accessToken, isBearerOAuth = true)
+            } catch (t: Throwable) {
+                showToast("OAuth2 sign-in failed: ${t.localizedMessage ?: "Unknown error"}")
+            } finally {
+                _isFetchingProfile.value = false
+            }
         }
     }
 

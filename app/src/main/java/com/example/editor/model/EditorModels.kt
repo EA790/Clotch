@@ -1,6 +1,7 @@
 package com.example.editor.model
 
 import android.net.Uri
+import androidx.compose.runtime.Immutable
 import com.example.data.VideoFormat
 import java.util.UUID
 
@@ -61,6 +62,7 @@ enum class TransitionType(val label: String, val ffmpegXfadeName: String) {
     ZOOM_IN("Iris/Zoom", "circleopen")
 }
 
+@Immutable
 data class TransitionSpec(
     val type: TransitionType = TransitionType.NONE,
     val durationMs: Long = 500L
@@ -78,6 +80,7 @@ enum class ChromaKeyBgStyle(val label: String) {
     SOLID_GREEN("Green Screen")
 }
 
+@Immutable
 data class ChromaKeyConfig(
     val enabled: Boolean = false,
     val mode: ChromaKeyMode = ChromaKeyMode.MOVING,
@@ -95,6 +98,7 @@ enum class AutoCaptionMode(val label: String) {
     AI_GEMINI("AI-Powered (Gemini 1.5 Flash)")
 }
 
+@Immutable
 data class ClipKeyframe(
     val id: String = UUID.randomUUID().toString(),
     val timeOffsetMs: Long,
@@ -104,6 +108,7 @@ data class ClipKeyframe(
     val opacity: Float = 1.0f
 )
 
+@Immutable
 data class KeyframeEval(
     val posX: Float = 0f,
     val posY: Float = 0f,
@@ -111,6 +116,7 @@ data class KeyframeEval(
     val opacity: Float = 1.0f
 )
 
+@Immutable
 data class TimelineTextOverlay(
     val id: String = UUID.randomUUID().toString(),
     val text: String,
@@ -129,6 +135,7 @@ data class TimelineTextOverlay(
         get() = timelineStartMs + durationMs.coerceAtLeast(300L)
 }
 
+@Immutable
 data class TimelineSticker(
     val id: String = UUID.randomUUID().toString(),
     val emoji: String,
@@ -142,6 +149,7 @@ data class TimelineSticker(
         get() = timelineStartMs + durationMs.coerceAtLeast(300L)
 }
 
+@Immutable
 data class TimelineVideoClip(
     val id: String = UUID.randomUUID().toString(),
     val sourceUri: Uri,
@@ -213,6 +221,7 @@ data class TimelineVideoClip(
     }
 }
 
+@Immutable
 data class TimelineAudioClip(
     val id: String = UUID.randomUUID().toString(),
     val sourceUri: Uri,
@@ -237,6 +246,7 @@ data class TimelineAudioClip(
         get() = if (isMuted) 0f else volume.coerceIn(0f, 2f)
 }
 
+@Immutable
 data class VideoClipWindow(
     val clip: TimelineVideoClip,
     val index: Int,
@@ -244,6 +254,7 @@ data class VideoClipWindow(
     val timelineEndMs: Long
 )
 
+@Immutable
 data class EditorProject(
     val projectId: String = UUID.randomUUID().toString(),
     val projectName: String = "Clotch Edit",
@@ -387,6 +398,7 @@ enum class EditorExportResolution(
     UHD_4K("4K", 3840, 2160)
 }
 
+@Immutable
 data class EditorExportConfig(
     val format: VideoFormat = VideoFormat.MP4,
     val resolution: EditorExportResolution = EditorExportResolution.FHD_1080P,
@@ -407,6 +419,7 @@ data class EditorExportConfig(
     }
 }
 
+@Immutable
 sealed interface EditorExportState {
     data object Idle : EditorExportState
     data class Exporting(val progress: Float, val statusText: String) : EditorExportState
@@ -414,6 +427,7 @@ sealed interface EditorExportState {
     data class Error(val message: String, val logPath: String) : EditorExportState
 }
 
+@Immutable
 sealed interface VoiceoverState {
     data object Idle : VoiceoverState
     data class Recording(
@@ -423,6 +437,7 @@ sealed interface VoiceoverState {
     ) : VoiceoverState
 }
 
+@Immutable
 sealed interface AutoCaptionState {
     data object Idle : AutoCaptionState
     data class Generating(val status: String) : AutoCaptionState

@@ -11,6 +11,8 @@ import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import com.example.diagnostics.CrashLogger
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
@@ -41,6 +43,26 @@ class DiscordProfileManager(private val context: Context) {
     companion object {
         const val OAUTH_REDIRECT_URI = "clotch://discord-callback"
         private const val DISCORD_API_ME = "https://discord.com/api/v10/users/@me"
+
+        fun sanitizeToken(rawToken: String): String {
+            return rawToken.trim()
+                .removeSurrounding("\"")
+                .removeSurrounding("'")
+                .trim()
+        }
+
+        fun isHeaderSafeToken(token: String): Boolean {
+            if (token.isEmpty()) return false
+            return token.all { ch ->
+                val code = ch.code
+                code in 0x21..0x7E
+            }
+        }
+
+        fun isValidOAuthClientId(clientId: String): Boolean {
+            val clean = clientId.trim()
+            return clean.length in 15..22 && clean.all { it.isDigit() }
+        }
     }
 
     private object Keys {
@@ -96,23 +118,23 @@ class DiscordProfileManager(private val context: Context) {
         rawToken: String,
         isBearerOAuth: Boolean
     ): Result<DiscordUserProfile> = withContext(Dispatchers.IO) {
-        val cleanToken = rawToken.trim()
-        if (cleanToken.isEmpty()) {
-            val err = IllegalArgumentException("Please enter a valid Discord token")
+        val cleanToken = sanitizeToken(rawToken)
+        if (!isHeaderSafeToken(cleanToken)) {
+            val err = IllegalArgumentException("Invalid Discord token format (remove spaces or special characters)")
             showToast(err.message!!)
             return@withContext Result.failure(err)
         }
 
-        val authHeader = if (isBearerOAuth) "Bearer $cleanToken" else cleanToken
-        val request = Request.Builder()
-            .url(DISCORD_API_ME)
-            .header("Authorization", authHeader)
-            .header("Accept", "application/json")
-            .build()
-
         try {
+            val authHeader = if (isBearerOAuth) "Bearer $cleanToken" else cleanToken
+            val request = Request.Builder()
+                .url(DISCORD_API_ME)
+                .header("Authorization", authHeader)
+                .header("Accept", "application/json")
+                .build()
+
             httpClient.newCall(request).execute().use { response ->
-                val bodyString = response.body?.string().orEmpty()
+                val bodyString = response.body?.string().orEmpty().trim()
                 if (!response.isSuccessful) {
                     val msg = when (response.code) {
                         401 -> "Discord sign-in failed: Invalid or expired token"
@@ -124,9 +146,22 @@ class DiscordProfileManager(private val context: Context) {
                     return@withContext Result.failure(IllegalStateException(msg))
                 }
 
+                if (bodyString.isEmpty() || !bodyString.startsWith("{")) {
+                    val msg = "Discord returned an unexpected non-JSON response"
+                    CrashLogger.logError("DiscordProfileManager", "$msg: ${bodyString.take(200)}")
+                    showToast(msg)
+                    return@withContext Result.failure(IllegalStateException(msg))
+                }
+
                 val json = JSONObject(bodyString)
-                val id = json.optString("id", "")
-                val username = json.optString("username", "")
+                val id = json.optString("id", "").takeIf { it != "null" } ?: ""
+                val username = json.optString("username", "").takeIf { it != "null" } ?: ""
+                if (id.isBlank() || username.isBlank()) {
+                    val msg = "Discord profile response missing user ID or username"
+                    showToast(msg)
+                    return@withContext Result.failure(IllegalStateException(msg))
+                }
+
                 val globalName = json.optString("global_name", "")
                     .takeIf { it.isNotBlank() && it != "null" } ?: ""
                 val avatarHash = json.optString("avatar", "")
@@ -168,10 +203,13 @@ class DiscordProfileManager(private val context: Context) {
                 showToast("Signed in to Discord as ${profile.displayTitle}")
                 Result.success(profile)
             }
-        } catch (e: Exception) {
-            val msg = "Discord sign-in error: ${e.localizedMessage ?: "Network unavailable"}"
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (t: Throwable) {
+            CrashLogger.logError("DiscordProfileManager", "Discord sign-in failed", t)
+            val msg = "Discord sign-in error: ${t.localizedMessage ?: "Network unavailable"}"
             showToast(msg)
-            Result.failure(e)
+            Result.failure(t)
         }
     }
 

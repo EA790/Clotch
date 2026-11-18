@@ -6,9 +6,11 @@ import androidx.compose.ui.graphics.Color
 val ObsidianBg = Color(0xFF101727)
 val CarbonSurface = Color(0xFF141C2E)
 
-// 20% Secondary Elevated Cards, Borders & Typography
+// 20% Secondary Elevated Cards & Typography
 val SlateCard = Color(0xFF1C2538)
 val ElevatedSlate = Color(0xFF242F46)
+val SoftTonalSurface = Color(0xFF182133)
+val ShimmerHighlight = Color(0xFF2A3652)
 val HairlineBorder = Color(0xFF2B3752)
 val TextPrimary = Color(0xFFF4F7FC)
 val TextSecondary = Color(0xFF8E9BB3)

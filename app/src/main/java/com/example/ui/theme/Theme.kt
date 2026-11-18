@@ -38,10 +38,10 @@ private val ClotchDarkColorScheme = darkColorScheme(
 )
 
 private val ClotchShapes = Shapes(
-    extraSmall = RoundedCornerShape(6.dp),
-    small = RoundedCornerShape(10.dp),
+    extraSmall = RoundedCornerShape(10.dp),
+    small = RoundedCornerShape(14.dp),
     medium = RoundedCornerShape(16.dp),
-    large = RoundedCornerShape(18.dp),
+    large = RoundedCornerShape(20.dp),
     extraLarge = RoundedCornerShape(24.dp)
 )
 

@@ -1,14 +1,13 @@
 package com.example.ui.screens
 
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -37,11 +36,8 @@ import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.VideoLibrary
 import androidx.compose.material.icons.outlined.Notifications
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
@@ -51,19 +47,26 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.ClotchSettings
+import com.example.data.RecordingMode
 import com.example.recording.RecorderState
+import com.example.ui.components.ClotchCardShape
+import com.example.ui.components.ClotchPillShape
+import com.example.ui.components.TactilePillButton
+import com.example.ui.components.TactileSurface
 import com.example.ui.theme.CarbonSurface
 import com.example.ui.theme.ClotchBlue
 import com.example.ui.theme.CrimsonAccent
 import com.example.ui.theme.CrimsonGlow
 import com.example.ui.theme.ElevatedSlate
-import com.example.ui.theme.HairlineBorder
 import com.example.ui.theme.JetBrainsMonoFamily
 import com.example.ui.theme.SignalEmerald
 import com.example.ui.theme.SlateCard
@@ -89,13 +92,14 @@ fun CaptureScreen(
     modifier: Modifier = Modifier
 ) {
     val scrollState = rememberScrollState()
+    val haptic = LocalHapticFeedback.current
     val isRecording = recorderState is RecorderState.Recording
     val isPaused = recorderState is RecorderState.Paused
 
     val infiniteTransition = rememberInfiniteTransition(label = "rec_pulse")
     val pulseAlpha by infiniteTransition.animateFloat(
-        initialValue = 0.35f,
-        targetValue = 1.0f,
+        initialValue = 0.3f,
+        targetValue = 0.95f,
         animationSpec = infiniteRepeatable(
             animation = tween(durationMillis = 850, easing = FastOutSlowInEasing),
             repeatMode = RepeatMode.Reverse
@@ -103,44 +107,48 @@ fun CaptureScreen(
         label = "pulse_alpha"
     )
 
+    val cardColor by animateColorAsState(
+        targetValue = when {
+            isRecording -> Color(0xFF211C2D)
+            isPaused -> Color(0xFF23222E)
+            else -> SlateCard
+        },
+        animationSpec = tween(240),
+        label = "recorder_card_bg"
+    )
+
     Column(
         modifier = modifier
             .fillMaxSize()
             .verticalScroll(scrollState)
-            .padding(horizontal = 20.dp, vertical = 12.dp),
+            .padding(horizontal = 20.dp, vertical = 16.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Column(
             modifier = Modifier.widthIn(max = 560.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(16.dp)
+            verticalArrangement = Arrangement.spacedBy(18.dp)
         ) {
-            Spacer(modifier = Modifier.height(6.dp))
+            Spacer(modifier = Modifier.height(4.dp))
 
             Text(
                 text = "Screen Recording",
                 style = MaterialTheme.typography.headlineMedium,
                 fontSize = 26.sp,
-                fontWeight = FontWeight.Bold,
                 color = TextPrimary,
                 textAlign = TextAlign.Center
             )
 
-            // Main Recorder Card styled in Clotch Midnight Navy & SlateCard
+            // Main Recorder Card styled with soft tonal depth (no harsh 1px borders)
             Surface(
                 modifier = Modifier.fillMaxWidth(),
-                color = SlateCard,
-                shape = RoundedCornerShape(18.dp),
-                border = when {
-                    isRecording -> BorderStroke(1.5.dp, CrimsonAccent.copy(alpha = 0.7f))
-                    isPaused -> BorderStroke(1.5.dp, WarningAmber.copy(alpha = 0.7f))
-                    else -> null
-                }
+                color = cardColor,
+                shape = ClotchCardShape
             ) {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(20.dp),
+                        .padding(22.dp),
                     verticalArrangement = Arrangement.spacedBy(18.dp)
                 ) {
                     Row(
@@ -181,23 +189,25 @@ fun CaptureScreen(
 
                         Box(
                             modifier = Modifier
-                                .size(50.dp)
+                                .size(54.dp)
                                 .clip(CircleShape)
                                 .background(
-                                    if (isRecording) CrimsonAccent.copy(alpha = pulseAlpha * 0.25f)
-                                    else ElevatedSlate
-                                )
-                                .border(
-                                    width = 1.5.dp,
-                                    color = if (isRecording) CrimsonAccent else HairlineBorder,
-                                    shape = CircleShape
+                                    if (isRecording) {
+                                        CrimsonAccent.copy(alpha = pulseAlpha * 0.25f)
+                                    } else {
+                                        ElevatedSlate
+                                    }
                                 ),
                             contentAlignment = Alignment.Center
                         ) {
                             Icon(
                                 imageVector = Icons.Filled.FiberManualRecord,
                                 contentDescription = "Recording status indicator",
-                                tint = if (isRecording) CrimsonAccent else TextMuted,
+                                tint = when {
+                                    isRecording -> CrimsonAccent
+                                    isPaused -> WarningAmber
+                                    else -> TextMuted
+                                },
                                 modifier = Modifier.size(22.dp)
                             )
                         }
@@ -231,8 +241,8 @@ fun CaptureScreen(
                         CaptureSpecChip(activeBitrate, highlighted = false)
                         CaptureSpecChip(settings.orientation.label, highlighted = false)
                         val audioLabel = when {
-                            settings.recordingMode == com.example.data.RecordingMode.VIDEO_ONLY && settings.recordAudioSeparately -> "Separate Mic"
-                            settings.recordingMode == com.example.data.RecordingMode.VIDEO_ONLY -> "Video Only"
+                            settings.recordingMode == RecordingMode.VIDEO_ONLY && settings.recordAudioSeparately -> "Separate Mic"
+                            settings.recordingMode == RecordingMode.VIDEO_ONLY -> "Video Only"
                             else -> settings.effectiveAudioSource.shortLabel
                         }
                         CaptureSpecChip(
@@ -245,14 +255,13 @@ fun CaptureScreen(
                     if (recorderState is RecorderState.Error) {
                         Surface(
                             color = CrimsonGlow,
-                            shape = RoundedCornerShape(10.dp),
-                            border = BorderStroke(1.dp, CrimsonAccent.copy(alpha = 0.5f))
+                            shape = RoundedCornerShape(14.dp)
                         ) {
                             Text(
                                 text = recorderState.message,
                                 style = MaterialTheme.typography.bodySmall,
                                 color = TextPrimary,
-                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)
                             )
                         }
                     }
@@ -263,80 +272,75 @@ fun CaptureScreen(
                     ) {
                         when {
                             isRecording || isPaused -> {
-                                OutlinedButton(
+                                TactilePillButton(
                                     onClick = if (isPaused) onResumeCapture else onPauseCapture,
                                     modifier = Modifier
                                         .weight(1f)
                                         .height(54.dp)
                                         .testTag("pause_resume_button"),
-                                    shape = RoundedCornerShape(14.dp),
-                                    border = BorderStroke(1.dp, HairlineBorder),
-                                    colors = ButtonDefaults.outlinedButtonColors(
-                                        containerColor = ElevatedSlate,
-                                        contentColor = TextPrimary
-                                    )
+                                    containerColor = ElevatedSlate,
+                                    contentColor = TextPrimary
                                 ) {
                                     Icon(
                                         imageVector = if (isPaused) Icons.Filled.PlayArrow else Icons.Filled.Pause,
                                         contentDescription = if (isPaused) "Resume" else "Pause"
                                     )
                                     Spacer(modifier = Modifier.width(6.dp))
-                                    Text(if (isPaused) "Resume" else "Pause")
+                                    Text(
+                                        text = if (isPaused) "Resume" else "Pause",
+                                        style = MaterialTheme.typography.labelLarge
+                                    )
                                 }
 
-                                Button(
+                                TactilePillButton(
                                     onClick = onStopCapture,
                                     modifier = Modifier
                                         .weight(1.3f)
                                         .height(54.dp)
                                         .testTag("record_toggle_button"),
-                                    shape = RoundedCornerShape(14.dp),
-                                    colors = ButtonDefaults.buttonColors(
-                                        containerColor = CrimsonAccent,
-                                        contentColor = TextPrimary
-                                    )
+                                    containerColor = CrimsonAccent,
+                                    contentColor = TextPrimary
                                 ) {
                                     Icon(
                                         imageVector = Icons.Filled.Stop,
                                         contentDescription = "Stop recording"
                                     )
                                     Spacer(modifier = Modifier.width(6.dp))
-                                    Text("Stop Capture")
+                                    Text(
+                                        text = "Stop Capture",
+                                        style = MaterialTheme.typography.labelLarge
+                                    )
                                 }
                             }
 
                             recorderState is RecorderState.Countdown -> {
-                                OutlinedButton(
+                                TactilePillButton(
                                     onClick = onCancelCountdown,
                                     modifier = Modifier
                                         .fillMaxWidth()
                                         .height(54.dp)
                                         .testTag("record_toggle_button"),
-                                    shape = RoundedCornerShape(14.dp),
-                                    border = BorderStroke(1.dp, WarningAmber),
-                                    colors = ButtonDefaults.outlinedButtonColors(
-                                        containerColor = WarningAmberMuted,
-                                        contentColor = TextPrimary
-                                    )
+                                    containerColor = WarningAmberMuted,
+                                    contentColor = WarningAmber
                                 ) {
                                     Icon(Icons.Filled.Stop, contentDescription = "Cancel countdown")
                                     Spacer(modifier = Modifier.width(8.dp))
-                                    Text("Cancel Countdown (${recorderState.secondsLeft}s)")
+                                    Text(
+                                        text = "Cancel Countdown (${recorderState.secondsLeft}s)",
+                                        style = MaterialTheme.typography.labelLarge
+                                    )
                                 }
                             }
 
                             else -> {
-                                Button(
+                                TactilePillButton(
                                     onClick = onStartCapture,
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .height(54.dp)
+                                        .height(56.dp)
                                         .testTag("record_toggle_button"),
-                                    shape = RoundedCornerShape(14.dp),
-                                    colors = ButtonDefaults.buttonColors(
-                                        containerColor = ClotchBlue,
-                                        contentColor = TextPrimary
-                                    )
+                                    containerColor = ClotchBlue,
+                                    contentColor = TextPrimary
                                 ) {
                                     Icon(
                                         imageVector = Icons.Filled.PlayArrow,
@@ -359,12 +363,12 @@ fun CaptureScreen(
             Surface(
                 modifier = Modifier.fillMaxWidth(),
                 color = SlateCard,
-                shape = RoundedCornerShape(18.dp)
+                shape = ClotchCardShape
             ) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 14.dp),
+                        .padding(horizontal = 18.dp, vertical = 16.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
@@ -375,8 +379,8 @@ fun CaptureScreen(
                     ) {
                         Box(
                             modifier = Modifier
-                                .size(38.dp)
-                                .clip(RoundedCornerShape(10.dp))
+                                .size(40.dp)
+                                .clip(RoundedCornerShape(12.dp))
                                 .background(ElevatedSlate),
                             contentAlignment = Alignment.Center
                         ) {
@@ -391,7 +395,7 @@ fun CaptureScreen(
                                 modifier = Modifier.size(20.dp)
                             )
                         }
-                        Column {
+                        Column(modifier = Modifier.padding(end = 8.dp)) {
                             Text(
                                 text = "Notification Quick Controls",
                                 style = MaterialTheme.typography.titleSmall,
@@ -407,31 +411,36 @@ fun CaptureScreen(
 
                     Switch(
                         checked = settings.showQuickNotification,
-                        onCheckedChange = onToggleQuickNotification,
+                        onCheckedChange = {
+                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                            onToggleQuickNotification(it)
+                        },
                         modifier = Modifier.testTag("quick_notification_switch"),
                         colors = SwitchDefaults.colors(
                             checkedThumbColor = TextPrimary,
                             checkedTrackColor = SignalEmerald,
                             uncheckedThumbColor = TextSecondary,
                             uncheckedTrackColor = ElevatedSlate,
-                            uncheckedBorderColor = HairlineBorder
+                            uncheckedBorderColor = Color.Transparent
                         )
                     )
                 }
             }
 
-            // Quick shortcuts row to Settings & Saved Clips
+            // Quick shortcuts pill row to Settings & Saved Clips
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                Surface(
+                TactileSurface(
                     onClick = onOpenClips,
                     modifier = Modifier
                         .weight(1f)
                         .height(54.dp),
                     color = SlateCard,
-                    shape = RoundedCornerShape(16.dp)
+                    shape = ClotchPillShape,
+                    pressedScale = 0.95f,
+                    hapticType = HapticFeedbackType.LongPress
                 ) {
                     Row(
                         modifier = Modifier.fillMaxSize(),
@@ -453,13 +462,15 @@ fun CaptureScreen(
                     }
                 }
 
-                Surface(
+                TactileSurface(
                     onClick = onOpenSettings,
                     modifier = Modifier
                         .weight(1f)
                         .height(54.dp),
                     color = SlateCard,
-                    shape = RoundedCornerShape(16.dp)
+                    shape = ClotchPillShape,
+                    pressedScale = 0.95f,
+                    hapticType = HapticFeedbackType.LongPress
                 ) {
                     Row(
                         modifier = Modifier.fillMaxSize(),
@@ -493,11 +504,10 @@ private fun CaptureSpecChip(
 ) {
     Surface(
         color = if (highlighted) ElevatedSlate else CarbonSurface,
-        shape = RoundedCornerShape(8.dp),
-        border = BorderStroke(1.dp, HairlineBorder)
+        shape = ClotchPillShape
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(5.dp)
         ) {

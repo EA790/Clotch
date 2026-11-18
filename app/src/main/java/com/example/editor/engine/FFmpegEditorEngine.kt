@@ -122,15 +122,21 @@ object FFmpegEditorEngine {
         context: Context,
         clip: TimelineVideoClip
     ): ExtractAudioResult = withContext(Dispatchers.IO) {
-        val inputFile = stageUriToLocalFile(context, clip.sourceUri)
-            ?: return@withContext ExtractAudioResult.Failure("Unable to access source video file")
+        val outDir = File(context.cacheDir, "editor_audio").apply { if (!exists()) mkdirs() }
+        val outFile = File(outDir, "extracted_${clip.id}_${System.currentTimeMillis()}.m4a")
 
-        if (!probeHasAudioStream(inputFile.absolutePath)) {
+        val inputFile = try {
+            stageUriToLocalFile(context, clip.sourceUri)
+        } catch (t: Throwable) {
+            CrashLogger.logError("ExtractAudio.Stage", "Unable to stage ${clip.sourceUri}", t)
+            null
+        } ?: return@withContext ExtractAudioResult.Failure("Unable to access source video file")
+
+        val hasAudio = runCatching { probeHasAudioStream(inputFile.absolutePath) }.getOrDefault(true)
+        if (!hasAudio) {
             return@withContext ExtractAudioResult.Failure("This clip has no audio stream to extract")
         }
 
-        val outDir = File(context.cacheDir, "editor_audio").apply { if (!exists()) mkdirs() }
-        val outFile = File(outDir, "extracted_${clip.id}_${System.currentTimeMillis()}.m4a")
         val startSec = formatSec(clip.trimStartMs)
         val durSec = formatSec(clip.sourceSpanMs)
 
@@ -145,25 +151,117 @@ object FFmpegEditorEngine {
             outFile.absolutePath
         )
 
-        val session = executeFfmpeg(args)
-        if (ReturnCode.isSuccess(session.returnCode) && outFile.exists() && outFile.length() > 0L) {
+        val ffmpegOk = try {
+            val session = executeFfmpeg(args)
+            val ok = ReturnCode.isSuccess(session.returnCode) && outFile.exists() && outFile.length() > 0L
+            if (!ok) {
+                CrashLogger.logFfmpegFailure(
+                    operation = "ExtractAudio",
+                    command = args.joinToString(" "),
+                    returnCode = session.returnCode?.toString(),
+                    logs = session.allLogsAsString ?: ""
+                )
+            }
+            ok
+        } catch (ce: kotlinx.coroutines.CancellationException) {
+            runCatching { outFile.delete() }
+            throw ce
+        } catch (t: Throwable) {
+            CrashLogger.logError("ExtractAudio.FFmpeg", "FFmpegKit execution threw", t)
+            false
+        }
+
+        if (ffmpegOk) {
+            return@withContext ExtractAudioResult.Success(
+                uri = Uri.fromFile(outFile),
+                file = outFile,
+                durationMs = clip.sourceSpanMs
+            )
+        }
+
+        // Native MediaExtractor + MediaMuxer read-only fallback (preserves original video completely)
+        runCatching { outFile.delete() }
+        val nativeOk = extractAudioWithMediaMuxer(
+            sourcePath = inputFile.absolutePath,
+            destFile = outFile,
+            startMs = clip.trimStartMs,
+            endMs = clip.trimEndMs
+        )
+        if (nativeOk) {
             ExtractAudioResult.Success(
                 uri = Uri.fromFile(outFile),
                 file = outFile,
                 durationMs = clip.sourceSpanMs
             )
         } else {
-            val cmdStr = args.joinToString(" ")
-            CrashLogger.logFfmpegFailure(
-                operation = "ExtractAudio",
-                command = cmdStr,
-                returnCode = session.returnCode?.toString(),
-                logs = session.allLogsAsString ?: ""
-            )
             runCatching { outFile.delete() }
             ExtractAudioResult.Failure(
-                "FFmpeg audio extraction failed. Full logs saved to ${CrashLogger.getLogDisplayPath()}"
+                "Audio extraction failed; original video untouched. Logs saved to ${CrashLogger.getLogDisplayPath()}"
             )
+        }
+    }
+
+    private fun extractAudioWithMediaMuxer(
+        sourcePath: String,
+        destFile: File,
+        startMs: Long,
+        endMs: Long
+    ): Boolean {
+        val extractor = android.media.MediaExtractor()
+        var muxer: android.media.MediaMuxer? = null
+        return try {
+            extractor.setDataSource(sourcePath)
+            var audioTrackIdx = -1
+            var audioFormat: android.media.MediaFormat? = null
+            for (i in 0 until extractor.trackCount) {
+                val fmt = extractor.getTrackFormat(i)
+                val mime = fmt.getString(android.media.MediaFormat.KEY_MIME).orEmpty()
+                if (mime.startsWith("audio/")) {
+                    audioTrackIdx = i
+                    audioFormat = fmt
+                    break
+                }
+            }
+            if (audioTrackIdx < 0 || audioFormat == null) return false
+
+            muxer = android.media.MediaMuxer(
+                destFile.absolutePath,
+                android.media.MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4
+            )
+            val dstTrack = muxer.addTrack(audioFormat)
+            muxer.start()
+
+            extractor.selectTrack(audioTrackIdx)
+            val startUs = (startMs * 1000L).coerceAtLeast(0L)
+            val endUs = if (endMs > startMs) endMs * 1000L else Long.MAX_VALUE
+            if (startUs > 0L) {
+                extractor.seekTo(startUs, android.media.MediaExtractor.SEEK_TO_CLOSEST_SYNC)
+            }
+
+            val buf = java.nio.ByteBuffer.allocate(256 * 1024)
+            val info = android.media.MediaCodec.BufferInfo()
+            var wroteSamples = 0
+            while (true) {
+                info.offset = 0
+                info.size = extractor.readSampleData(buf, 0)
+                if (info.size < 0) break
+                val pts = extractor.sampleTime
+                if (pts > endUs) break
+                info.presentationTimeUs = (pts - startUs).coerceAtLeast(0L)
+                info.flags = extractor.sampleFlags
+                muxer.writeSampleData(dstTrack, buf, info)
+                wroteSamples++
+                extractor.advance()
+            }
+            muxer.stop()
+            wroteSamples > 0 && destFile.exists() && destFile.length() > 0L
+        } catch (t: Throwable) {
+            CrashLogger.logError("ExtractAudio.MediaMuxer", "Native fallback failed", t)
+            runCatching { destFile.delete() }
+            false
+        } finally {
+            runCatching { muxer?.release() }
+            runCatching { extractor.release() }
         }
     }
 

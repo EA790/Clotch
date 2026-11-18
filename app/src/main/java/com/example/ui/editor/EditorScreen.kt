@@ -5,8 +5,15 @@ import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.BorderStroke
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -45,14 +52,10 @@ import androidx.compose.material.icons.filled.TextFields
 import androidx.compose.material.icons.filled.VideoLibrary
 import androidx.compose.material.icons.filled.ZoomIn
 import androidx.compose.material.icons.filled.ZoomOut
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
@@ -61,8 +64,12 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
@@ -73,12 +80,17 @@ import com.example.editor.model.AutoCaptionMode
 import com.example.editor.model.EditorExportState
 import com.example.editor.model.TransitionSpec
 import com.example.editor.model.VoiceoverState
+import com.example.ui.components.ClotchInnerCardShape
+import com.example.ui.components.ClotchPillShape
+import com.example.ui.components.TactileIconButton
+import com.example.ui.components.TactilePillButton
+import com.example.ui.components.TactileSurface
+import com.example.ui.components.tactilePressScale
+import com.example.ui.theme.CarbonSurface
 import com.example.ui.theme.ClotchBlue
-import com.example.ui.theme.ClotchBlueMuted
 import com.example.ui.theme.CrimsonAccent
 import com.example.ui.theme.CrimsonGlow
 import com.example.ui.theme.ElevatedSlate
-import com.example.ui.theme.HairlineBorder
 import com.example.ui.theme.JetBrainsMonoFamily
 import com.example.ui.theme.SlateCard
 import com.example.ui.theme.TextMuted
@@ -105,6 +117,7 @@ fun EditorScreen(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
+    val haptic = LocalHapticFeedback.current
     val project by editorViewModel.project.collectAsStateWithLifecycle()
     val canUndo by editorViewModel.canUndo.collectAsStateWithLifecycle()
     val canRedo by editorViewModel.canRedo.collectAsStateWithLifecycle()
@@ -164,16 +177,16 @@ fun EditorScreen(
         modifier = modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
-            .padding(horizontal = 16.dp, vertical = 10.dp),
+            .padding(horizontal = 20.dp, vertical = 12.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Column(
             modifier = Modifier
                 .widthIn(max = 600.dp)
                 .fillMaxWidth(),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
+            verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            // Top Studio Action Bar: Undo, Redo, Zoom, Export
+            // Top Studio Action Bar: Undo, Redo, Zoom, Export Pill
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
@@ -183,12 +196,10 @@ fun EditorScreen(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(2.dp)
                 ) {
-                    IconButton(
+                    TactileIconButton(
                         onClick = { editorViewModel.undo() },
                         enabled = canUndo,
-                        modifier = Modifier
-                            .minimumInteractiveComponentSize()
-                            .testTag("editor_undo_button")
+                        modifier = Modifier.testTag("editor_undo_button")
                     ) {
                         Icon(
                             imageVector = Icons.AutoMirrored.Filled.Undo,
@@ -196,12 +207,10 @@ fun EditorScreen(
                             tint = if (canUndo) TextPrimary else TextMuted
                         )
                     }
-                    IconButton(
+                    TactileIconButton(
                         onClick = { editorViewModel.redo() },
                         enabled = canRedo,
-                        modifier = Modifier
-                            .minimumInteractiveComponentSize()
-                            .testTag("editor_redo_button")
+                        modifier = Modifier.testTag("editor_redo_button")
                     ) {
                         Icon(
                             imageVector = Icons.AutoMirrored.Filled.Redo,
@@ -215,11 +224,9 @@ fun EditorScreen(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
-                    IconButton(
+                    TactileIconButton(
                         onClick = { editorViewModel.zoomOut() },
-                        modifier = Modifier
-                            .minimumInteractiveComponentSize()
-                            .testTag("editor_zoom_out_button")
+                        modifier = Modifier.testTag("editor_zoom_out_button")
                     ) {
                         Icon(
                             imageVector = Icons.Filled.ZoomOut,
@@ -229,22 +236,19 @@ fun EditorScreen(
                     }
                     Surface(
                         color = SlateCard,
-                        shape = RoundedCornerShape(8.dp),
-                        border = BorderStroke(1.dp, HairlineBorder)
+                        shape = ClotchPillShape
                     ) {
                         Text(
                             text = String.format(Locale.US, "%.1fx", project.zoomLevel),
                             fontFamily = JetBrainsMonoFamily,
                             style = MaterialTheme.typography.labelSmall,
                             color = TextSecondary,
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
                         )
                     }
-                    IconButton(
+                    TactileIconButton(
                         onClick = { editorViewModel.zoomIn() },
-                        modifier = Modifier
-                            .minimumInteractiveComponentSize()
-                            .testTag("editor_zoom_in_button")
+                        modifier = Modifier.testTag("editor_zoom_in_button")
                     ) {
                         Icon(
                             imageVector = Icons.Filled.ZoomIn,
@@ -254,7 +258,7 @@ fun EditorScreen(
                     }
                 }
 
-                Button(
+                TactilePillButton(
                     onClick = {
                         editorViewModel.resetExportState()
                         showExportDialog = true
@@ -263,14 +267,9 @@ fun EditorScreen(
                     modifier = Modifier
                         .height(48.dp)
                         .testTag("editor_export_button"),
-                    shape = RoundedCornerShape(12.dp),
-                    contentPadding = PaddingValues(horizontal = 16.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = ClotchBlue,
-                        contentColor = TextPrimary,
-                        disabledContainerColor = ElevatedSlate,
-                        disabledContentColor = TextMuted
-                    )
+                    contentPadding = PaddingValues(horizontal = 18.dp, vertical = 10.dp),
+                    containerColor = ClotchBlue,
+                    contentColor = TextPrimary
                 ) {
                     Icon(
                         imageVector = Icons.Filled.Download,
@@ -282,9 +281,10 @@ fun EditorScreen(
                 }
             }
 
-            // Stage 2 Interactive Media3 Preview Viewport (with Keyframes, Tint, Animated Text/Captions & Stickers)
+            // Interactive Media3 Preview Viewport
             EditorPreviewStage(
                 project = project,
+                playheadMsFlow = editorViewModel.playheadMs,
                 exoPlayer = editorViewModel.exoPlayer,
                 isBusy = isBusy,
                 voiceoverState = voiceoverState,
@@ -307,32 +307,33 @@ fun EditorScreen(
                 }
             )
 
-            // Playback Transport & Clip Edit Actions Bar
+            // Playback Transport & Clip Edit Actions Bar (Borderless Tonal Surface)
             Surface(
                 modifier = Modifier.fillMaxWidth(),
                 color = SlateCard,
-                shape = RoundedCornerShape(14.dp),
-                border = BorderStroke(1.dp, HairlineBorder)
+                shape = ClotchInnerCardShape
             ) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 10.dp, vertical = 6.dp),
+                        .padding(horizontal = 10.dp, vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
-                        Surface(
+                        TactileSurface(
                             onClick = { editorViewModel.togglePlayPause() },
                             enabled = project.videoClips.isNotEmpty(),
                             modifier = Modifier
                                 .size(48.dp)
                                 .testTag("editor_play_pause_button"),
                             shape = CircleShape,
-                            color = if (project.videoClips.isNotEmpty()) ClotchBlue else ElevatedSlate
+                            color = if (project.videoClips.isNotEmpty()) ClotchBlue else ElevatedSlate,
+                            pressedScale = 0.92f,
+                            hapticType = HapticFeedbackType.LongPress
                         ) {
                             Box(contentAlignment = Alignment.Center) {
                                 Icon(
@@ -343,11 +344,9 @@ fun EditorScreen(
                             }
                         }
 
-                        Text(
-                            text = "${formatClockMs(project.playheadMs)} / ${formatClockMs(project.totalTimelineDurationMs)}",
-                            fontFamily = JetBrainsMonoFamily,
-                            style = MaterialTheme.typography.labelMedium,
-                            color = TextPrimary
+                        EditorPlayheadTimecodeText(
+                            playheadMsFlow = editorViewModel.playheadMs,
+                            totalDurationMs = project.totalTimelineDurationMs
                         )
                     }
 
@@ -359,12 +358,11 @@ fun EditorScreen(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(2.dp)
                     ) {
-                        IconButton(
+                        TactileIconButton(
                             onClick = { editorViewModel.splitAtPlayhead() },
                             enabled = project.videoClips.isNotEmpty(),
-                            modifier = Modifier
-                                .minimumInteractiveComponentSize()
-                                .testTag("editor_split_button")
+                            hapticType = HapticFeedbackType.LongPress,
+                            modifier = Modifier.testTag("editor_split_button")
                         ) {
                             Icon(
                                 imageVector = Icons.Filled.ContentCut,
@@ -372,12 +370,11 @@ fun EditorScreen(
                                 tint = if (project.videoClips.isNotEmpty()) TextPrimary else TextMuted
                             )
                         }
-                        IconButton(
+                        TactileIconButton(
                             onClick = { editorViewModel.duplicateSelectedClip() },
                             enabled = hasSelection,
-                            modifier = Modifier
-                                .minimumInteractiveComponentSize()
-                                .testTag("editor_duplicate_button")
+                            hapticType = HapticFeedbackType.LongPress,
+                            modifier = Modifier.testTag("editor_duplicate_button")
                         ) {
                             Icon(
                                 imageVector = Icons.Filled.ContentCopy,
@@ -385,12 +382,11 @@ fun EditorScreen(
                                 tint = if (hasSelection) TextPrimary else TextMuted
                             )
                         }
-                        IconButton(
+                        TactileIconButton(
                             onClick = { editorViewModel.deleteSelectedClip() },
                             enabled = hasSelection,
-                            modifier = Modifier
-                                .minimumInteractiveComponentSize()
-                                .testTag("editor_delete_button")
+                            hapticType = HapticFeedbackType.LongPress,
+                            modifier = Modifier.testTag("editor_delete_button")
                         ) {
                             Icon(
                                 imageVector = Icons.Filled.DeleteOutline,
@@ -402,7 +398,7 @@ fun EditorScreen(
                 }
             }
 
-            // Media Import & Voiceover Strip
+            // Media Import & Voiceover Pill Strip
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -456,9 +452,10 @@ fun EditorScreen(
                 )
             }
 
-            // Multi-Track Interactive Timeline (Video, Transitions, Overlays/Captions, Audio)
+            // Multi-Track Interactive InShot-Style Timeline
             TimelineCanvas(
                 project = project,
+                playheadMsFlow = editorViewModel.playheadMs,
                 thumbnailCache = editorViewModel.thumbnailCache,
                 isPlaying = isPlaying,
                 onSeekTo = { editorViewModel.seekTo(it) },
@@ -492,39 +489,78 @@ fun EditorScreen(
                 }
             )
 
-            // Studio Category Switcher (Audio / Text & AI / Color & Speed / Transform / AI Chroma & 4K)
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            // InShot-Style Scrolling Bottom Toolbar Tab Bar with Active Underline Indicator
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                color = CarbonSurface,
+                shape = ClotchInnerCardShape
             ) {
-                EditorToolTab.entries.forEach { tab ->
-                    val selected = activeToolTab == tab
-                    Surface(
-                        onClick = { activeToolTab = tab },
-                        modifier = Modifier
-                            .height(44.dp)
-                            .testTag("tool_tab_${tab.name}"),
-                        shape = RoundedCornerShape(12.dp),
-                        color = if (selected) ClotchBlueMuted else SlateCard,
-                        border = BorderStroke(1.dp, if (selected) ClotchBlue else HairlineBorder)
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 12.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState())
+                        .padding(horizontal = 8.dp, vertical = 4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    EditorToolTab.entries.forEach { tab ->
+                        val selected = activeToolTab == tab
+                        val interactionSource = remember { MutableInteractionSource() }
+                        val fgColor by animateColorAsState(
+                            targetValue = if (selected) TextPrimary else TextSecondary,
+                            animationSpec = tween(160),
+                            label = "tab_fg"
+                        )
+                        val iconTint by animateColorAsState(
+                            targetValue = if (selected) ClotchBlue else TextSecondary,
+                            animationSpec = tween(160),
+                            label = "tab_icon"
+                        )
+                        val underlineWidth by animateDpAsState(
+                            targetValue = if (selected) 26.dp else 0.dp,
+                            animationSpec = tween(200, easing = FastOutSlowInEasing),
+                            label = "tab_underline_w"
+                        )
+                        val underlineAlpha by animateFloatAsState(
+                            targetValue = if (selected) 1f else 0f,
+                            animationSpec = tween(180),
+                            label = "tab_underline_a"
+                        )
+
+                        Column(
+                            modifier = Modifier
+                                .tactilePressScale(interactionSource, pressedScale = 0.93f)
+                                .clip(RoundedCornerShape(12.dp))
+                                .clickable(
+                                    interactionSource = interactionSource,
+                                    indication = androidx.compose.material3.ripple(color = ClotchBlue)
+                                ) {
+                                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                    activeToolTab = tab
+                                }
+                                .padding(horizontal = 12.dp, vertical = 8.dp)
+                                .testTag("tool_tab_${tab.name}"),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
                         ) {
                             Icon(
                                 imageVector = tab.icon,
                                 contentDescription = tab.label,
-                                tint = if (selected) ClotchBlue else TextSecondary,
-                                modifier = Modifier.size(16.dp)
+                                tint = iconTint,
+                                modifier = Modifier.size(18.dp)
                             )
                             Text(
                                 text = tab.label,
                                 style = MaterialTheme.typography.labelMedium,
-                                color = if (selected) ClotchBlue else TextSecondary
+                                color = fgColor
+                            )
+                            Box(
+                                modifier = Modifier
+                                    .width(underlineWidth)
+                                    .height(3.dp)
+                                    .alpha(underlineAlpha)
+                                    .clip(ClotchPillShape)
+                                    .background(ClotchBlue)
                             )
                         }
                     }
@@ -680,17 +716,18 @@ private fun EditorActionPill(
     accent: Boolean = false,
     onClick: () -> Unit
 ) {
-    Surface(
+    TactileSurface(
         onClick = onClick,
         modifier = Modifier
             .height(48.dp)
             .testTag(testTag),
-        shape = RoundedCornerShape(12.dp),
+        shape = ClotchPillShape,
         color = if (accent) CrimsonGlow else SlateCard,
-        border = BorderStroke(1.dp, if (accent) CrimsonAccent else HairlineBorder)
+        pressedScale = 0.94f,
+        hapticType = HapticFeedbackType.LongPress
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 14.dp),
+            modifier = Modifier.padding(horizontal = 16.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
@@ -707,6 +744,20 @@ private fun EditorActionPill(
             )
         }
     }
+}
+
+@Composable
+private fun EditorPlayheadTimecodeText(
+    playheadMsFlow: kotlinx.coroutines.flow.StateFlow<Long>,
+    totalDurationMs: Long
+) {
+    val playheadMs by playheadMsFlow.collectAsStateWithLifecycle()
+    Text(
+        text = "${formatClockMs(playheadMs)} / ${formatClockMs(totalDurationMs)}",
+        fontFamily = JetBrainsMonoFamily,
+        style = MaterialTheme.typography.labelMedium,
+        color = TextPrimary
+    )
 }
 
 private fun formatClockMs(ms: Long): String {

@@ -8,9 +8,7 @@ import android.net.Uri
 import android.os.Build
 import android.text.format.Formatter
 import android.util.LruCache
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -29,23 +27,17 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.DeleteOutline
-import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.MovieCreation
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.outlined.Videocam
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -56,21 +48,29 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.example.data.RecordedClip
+import com.example.ui.components.ClotchCardShape
+import com.example.ui.components.ClotchInnerCardShape
+import com.example.ui.components.ClotchPillShape
+import com.example.ui.components.ShimmerBox
+import com.example.ui.components.TactileIconButton
+import com.example.ui.components.TactilePillButton
+import com.example.ui.components.TactileSurface
 import com.example.ui.theme.CarbonSurface
 import com.example.ui.theme.ClotchBlue
+import com.example.ui.theme.ClotchBlueMuted
 import com.example.ui.theme.CrimsonAccent
 import com.example.ui.theme.CrimsonGlow
 import com.example.ui.theme.ElevatedSlate
-import com.example.ui.theme.HairlineBorder
+import com.example.ui.theme.JetBrainsMonoFamily
 import com.example.ui.theme.SlateCard
 import com.example.ui.theme.TextMuted
 import com.example.ui.theme.TextPrimary
@@ -84,6 +84,7 @@ import kotlinx.coroutines.withContext
 @Composable
 fun ClipsScreen(
     clips: List<RecordedClip>,
+    isLoadingClips: Boolean = false,
     onRefreshClips: () -> Unit,
     onDeleteClip: (RecordedClip) -> Unit,
     onShowMessage: (String) -> Unit,
@@ -100,7 +101,7 @@ fun ClipsScreen(
     Column(
         modifier = modifier
             .fillMaxSize()
-            .padding(horizontal = 20.dp, vertical = 12.dp),
+            .padding(horizontal = 20.dp, vertical = 16.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Column(
@@ -113,25 +114,26 @@ fun ClipsScreen(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                Column {
+                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                     Text(
                         text = "Saved Clips",
                         style = MaterialTheme.typography.headlineMedium,
-                        fontWeight = FontWeight.Bold,
                         color = TextPrimary
                     )
                     Text(
-                        text = "${clips.size} ${if (clips.size == 1) "recording" else "recordings"} in Movies/Clotch",
+                        text = if (isLoadingClips && clips.isEmpty()) {
+                            "Scanning Movies/Clotch..."
+                        } else {
+                            "${clips.size} ${if (clips.size == 1) "recording" else "recordings"} in Movies/Clotch"
+                        },
                         style = MaterialTheme.typography.bodySmall,
                         color = TextSecondary
                     )
                 }
 
-                IconButton(
+                TactileIconButton(
                     onClick = onRefreshClips,
-                    modifier = Modifier
-                        .minimumInteractiveComponentSize()
-                        .testTag("refresh_clips_button")
+                    modifier = Modifier.testTag("refresh_clips_button")
                 ) {
                     Icon(
                         imageVector = Icons.Filled.Refresh,
@@ -141,47 +143,53 @@ fun ClipsScreen(
                 }
             }
 
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(18.dp))
 
-            if (clips.isEmpty()) {
-                EmptyClipsState(modifier = Modifier.weight(1f))
-            } else {
-                LazyColumn(
-                    modifier = Modifier.fillMaxSize(),
-                    verticalArrangement = Arrangement.spacedBy(12.dp),
-                    contentPadding = PaddingValues(bottom = 16.dp)
-                ) {
-                    items(clips, key = { it.id }) { clip ->
-                        ClipItemCard(
-                            clip = clip,
-                            onPlay = {
-                                val viewIntent = Intent(Intent.ACTION_VIEW).apply {
-                                    setDataAndType(clip.uri, clip.mimeType)
-                                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                                }
-                                runCatching {
-                                    context.startActivity(viewIntent)
-                                }.onFailure {
-                                    onShowMessage("No video player found to open ${clip.displayName}")
-                                }
-                            },
-                            onShare = {
-                                val shareIntent = Intent(Intent.ACTION_SEND).apply {
-                                    type = "video/mp4"
-                                    putExtra(Intent.EXTRA_STREAM, clip.uri)
-                                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                                }
-                                runCatching {
-                                    context.startActivity(
-                                        Intent.createChooser(shareIntent, "Share Clotch Clip")
-                                    )
-                                }.onFailure {
-                                    onShowMessage("Unable to share clip")
-                                }
-                            },
-                            onEdit = { onEditClip(clip) },
-                            onDelete = { clipPendingDelete = clip }
-                        )
+            when {
+                isLoadingClips && clips.isEmpty() -> {
+                    ClipsShimmerLoadingList(modifier = Modifier.weight(1f))
+                }
+                clips.isEmpty() -> {
+                    EmptyClipsState(modifier = Modifier.weight(1f))
+                }
+                else -> {
+                    LazyColumn(
+                        modifier = Modifier.fillMaxSize(),
+                        verticalArrangement = Arrangement.spacedBy(14.dp),
+                        contentPadding = PaddingValues(bottom = 16.dp)
+                    ) {
+                        items(clips, key = { it.id }) { clip ->
+                            ClipItemCard(
+                                clip = clip,
+                                onPlay = {
+                                    val viewIntent = Intent(Intent.ACTION_VIEW).apply {
+                                        setDataAndType(clip.uri, clip.mimeType)
+                                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                    }
+                                    runCatching {
+                                        context.startActivity(viewIntent)
+                                    }.onFailure {
+                                        onShowMessage("No video player found to open ${clip.displayName}")
+                                    }
+                                },
+                                onShare = {
+                                    val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                                        type = "video/mp4"
+                                        putExtra(Intent.EXTRA_STREAM, clip.uri)
+                                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                    }
+                                    runCatching {
+                                        context.startActivity(
+                                            Intent.createChooser(shareIntent, "Share Clotch Clip")
+                                        )
+                                    }.onFailure {
+                                        onShowMessage("Unable to share clip")
+                                    }
+                                },
+                                onEdit = { onEditClip(clip) },
+                                onDelete = { clipPendingDelete = clip }
+                            )
+                        }
                     }
                 }
             }
@@ -192,22 +200,29 @@ fun ClipsScreen(
         AlertDialog(
             onDismissRequest = { clipPendingDelete = null },
             containerColor = SlateCard,
+            shape = RoundedCornerShape(24.dp),
             titleContentColor = TextPrimary,
             textContentColor = TextSecondary,
-            title = { Text("Delete Recording?") },
+            title = {
+                Text(
+                    text = "Delete Recording?",
+                    style = MaterialTheme.typography.titleLarge
+                )
+            },
             text = {
-                Text("This permanently removes ${target.displayName} from your device storage.")
+                Text(
+                    text = "This permanently removes ${target.displayName} from your device storage.",
+                    style = MaterialTheme.typography.bodyMedium
+                )
             },
             confirmButton = {
-                Button(
+                TactilePillButton(
                     onClick = {
                         onDeleteClip(target)
                         clipPendingDelete = null
                     },
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = CrimsonAccent,
-                        contentColor = TextPrimary
-                    )
+                    containerColor = CrimsonAccent,
+                    contentColor = TextPrimary
                 ) {
                     Text("Delete")
                 }
@@ -222,6 +237,112 @@ fun ClipsScreen(
 }
 
 @Composable
+private fun ClipsShimmerLoadingList(modifier: Modifier = Modifier) {
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .testTag("clips_shimmer_loader"),
+        verticalArrangement = Arrangement.spacedBy(14.dp)
+    ) {
+        repeat(3) {
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                color = SlateCard,
+                shape = ClotchCardShape
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(14.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(14.dp)
+                    ) {
+                        ShimmerBox(
+                            modifier = Modifier.size(60.dp),
+                            shape = RoundedCornerShape(14.dp),
+                            baseColor = CarbonSurface
+                        )
+                        Column(
+                            modifier = Modifier.weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            ShimmerBox(
+                                modifier = Modifier
+                                    .fillMaxWidth(0.7f)
+                                    .height(16.dp),
+                                shape = ClotchPillShape,
+                                baseColor = CarbonSurface
+                            )
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                ShimmerBox(
+                                    modifier = Modifier
+                                        .width(56.dp)
+                                        .height(18.dp),
+                                    shape = ClotchPillShape,
+                                    baseColor = CarbonSurface
+                                )
+                                ShimmerBox(
+                                    modifier = Modifier
+                                        .width(48.dp)
+                                        .height(18.dp),
+                                    shape = ClotchPillShape,
+                                    baseColor = CarbonSurface
+                                )
+                            }
+                            ShimmerBox(
+                                modifier = Modifier
+                                    .width(96.dp)
+                                    .height(12.dp),
+                                shape = ClotchPillShape,
+                                baseColor = CarbonSurface
+                            )
+                        }
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        ShimmerBox(
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(46.dp),
+                            shape = ClotchPillShape,
+                            baseColor = CarbonSurface
+                        )
+                        ShimmerBox(
+                            modifier = Modifier
+                                .width(54.dp)
+                                .height(46.dp),
+                            shape = ClotchPillShape,
+                            baseColor = CarbonSurface
+                        )
+                        ShimmerBox(
+                            modifier = Modifier
+                                .width(54.dp)
+                                .height(46.dp),
+                            shape = ClotchPillShape,
+                            baseColor = CarbonSurface
+                        )
+                        ShimmerBox(
+                            modifier = Modifier
+                                .width(54.dp)
+                                .height(46.dp),
+                            shape = ClotchPillShape,
+                            baseColor = CarbonSurface
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun EmptyClipsState(modifier: Modifier = Modifier) {
     Box(
         modifier = modifier.fillMaxWidth(),
@@ -230,7 +351,7 @@ private fun EmptyClipsState(modifier: Modifier = Modifier) {
         Surface(
             modifier = Modifier.fillMaxWidth(),
             color = SlateCard,
-            shape = RoundedCornerShape(18.dp)
+            shape = ClotchCardShape
         ) {
             Column(
                 modifier = Modifier.padding(28.dp),
@@ -241,8 +362,7 @@ private fun EmptyClipsState(modifier: Modifier = Modifier) {
                     modifier = Modifier
                         .size(64.dp)
                         .clip(RoundedCornerShape(18.dp))
-                        .background(ElevatedSlate)
-                        .border(1.dp, HairlineBorder, RoundedCornerShape(18.dp)),
+                        .background(ElevatedSlate),
                     contentAlignment = Alignment.Center
                 ) {
                     Icon(
@@ -297,18 +417,18 @@ private fun ClipItemCard(
             .fillMaxWidth()
             .testTag("clip_card_${clip.id}"),
         color = SlateCard,
-        shape = RoundedCornerShape(18.dp)
+        shape = ClotchCardShape
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                horizontalArrangement = Arrangement.spacedBy(14.dp)
             ) {
                 val thumbnailBitmap by produceState<Bitmap?>(
                     initialValue = ClipsThumbnailCache.get(clip.uri, clip.sizeBytes),
@@ -324,10 +444,9 @@ private fun ClipItemCard(
 
                 Box(
                     modifier = Modifier
-                        .size(56.dp)
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(CarbonSurface)
-                        .border(1.dp, HairlineBorder, RoundedCornerShape(12.dp)),
+                        .size(60.dp)
+                        .clip(ClotchInnerCardShape)
+                        .background(CarbonSurface),
                     contentAlignment = Alignment.Center
                 ) {
                     if (thumbnailBitmap != null) {
@@ -340,21 +459,20 @@ private fun ClipItemCard(
                             contentScale = ContentScale.Crop,
                             modifier = Modifier
                                 .fillMaxSize()
-                                .clip(RoundedCornerShape(12.dp))
+                                .clip(ClotchInnerCardShape)
                         )
                     } else {
-                        Icon(
-                            imageVector = Icons.Filled.Movie,
-                            contentDescription = null,
-                            tint = ClotchBlue,
-                            modifier = Modifier.size(26.dp)
+                        ShimmerBox(
+                            modifier = Modifier.fillMaxSize(),
+                            shape = ClotchInnerCardShape,
+                            baseColor = CarbonSurface
                         )
                     }
                 }
 
                 Column(
                     modifier = Modifier.weight(1f),
-                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                    verticalArrangement = Arrangement.spacedBy(5.dp)
                 ) {
                     Text(
                         text = clip.displayName,
@@ -365,7 +483,7 @@ private fun ClipItemCard(
                     )
 
                     Row(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         val resTag = if (clip.width > 0 && clip.height > 0) {
@@ -374,7 +492,7 @@ private fun ClipItemCard(
                             "MP4"
                         }
                         ClipMetaPill(resTag)
-                        ClipMetaPill(formattedDuration)
+                        ClipMetaPill(formattedDuration, mono = true)
                         ClipMetaPill(formattedSize)
                     }
 
@@ -391,17 +509,14 @@ private fun ClipItemCard(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Button(
+                TactilePillButton(
                     onClick = onPlay,
                     modifier = Modifier
                         .weight(1f)
                         .height(48.dp)
                         .testTag("play_clip_${clip.id}"),
-                    shape = RoundedCornerShape(12.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = ElevatedSlate,
-                        contentColor = TextPrimary
-                    )
+                    containerColor = ElevatedSlate,
+                    contentColor = TextPrimary
                 ) {
                     Icon(
                         imageVector = Icons.Filled.PlayArrow,
@@ -412,55 +527,66 @@ private fun ClipItemCard(
                     Text("Play", style = MaterialTheme.typography.labelLarge)
                 }
 
-                OutlinedButton(
+                TactileSurface(
                     onClick = onEdit,
                     modifier = Modifier
                         .height(48.dp)
+                        .width(56.dp)
                         .testTag("edit_clip_${clip.id}"),
-                    shape = RoundedCornerShape(12.dp),
-                    border = BorderStroke(1.dp, ClotchBlue.copy(alpha = 0.45f))
+                    color = ClotchBlueMuted,
+                    shape = ClotchPillShape,
+                    pressedScale = 0.93f,
+                    hapticType = HapticFeedbackType.LongPress
                 ) {
-                    Icon(
-                        imageVector = Icons.Filled.MovieCreation,
-                        contentDescription = "Edit clip",
-                        tint = ClotchBlue,
-                        modifier = Modifier.size(18.dp)
-                    )
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            imageVector = Icons.Filled.MovieCreation,
+                            contentDescription = "Edit clip",
+                            tint = ClotchBlue,
+                            modifier = Modifier.size(19.dp)
+                        )
+                    }
                 }
 
-                OutlinedButton(
+                TactileSurface(
                     onClick = onShare,
                     modifier = Modifier
                         .height(48.dp)
+                        .width(56.dp)
                         .testTag("share_clip_${clip.id}"),
-                    shape = RoundedCornerShape(12.dp),
-                    border = BorderStroke(1.dp, HairlineBorder)
+                    color = CarbonSurface,
+                    shape = ClotchPillShape,
+                    pressedScale = 0.93f
                 ) {
-                    Icon(
-                        imageVector = Icons.Filled.Share,
-                        contentDescription = "Share clip",
-                        tint = TextSecondary,
-                        modifier = Modifier.size(18.dp)
-                    )
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            imageVector = Icons.Filled.Share,
+                            contentDescription = "Share clip",
+                            tint = TextSecondary,
+                            modifier = Modifier.size(19.dp)
+                        )
+                    }
                 }
 
-                OutlinedButton(
+                TactileSurface(
                     onClick = onDelete,
                     modifier = Modifier
                         .height(48.dp)
+                        .width(56.dp)
                         .testTag("delete_clip_${clip.id}"),
-                    shape = RoundedCornerShape(12.dp),
-                    border = BorderStroke(1.dp, CrimsonAccent.copy(alpha = 0.4f)),
-                    colors = ButtonDefaults.outlinedButtonColors(
-                        containerColor = CrimsonGlow.copy(alpha = 0.3f)
-                    )
+                    color = CrimsonGlow,
+                    shape = ClotchPillShape,
+                    pressedScale = 0.93f,
+                    hapticType = HapticFeedbackType.LongPress
                 ) {
-                    Icon(
-                        imageVector = Icons.Filled.DeleteOutline,
-                        contentDescription = "Delete clip",
-                        tint = CrimsonAccent,
-                        modifier = Modifier.size(18.dp)
-                    )
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            imageVector = Icons.Filled.DeleteOutline,
+                            contentDescription = "Delete clip",
+                            tint = CrimsonAccent,
+                            modifier = Modifier.size(19.dp)
+                        )
+                    }
                 }
             }
         }
@@ -468,17 +594,17 @@ private fun ClipItemCard(
 }
 
 @Composable
-private fun ClipMetaPill(label: String) {
+private fun ClipMetaPill(label: String, mono: Boolean = false) {
     Surface(
         color = CarbonSurface,
-        shape = RoundedCornerShape(6.dp),
-        border = BorderStroke(1.dp, HairlineBorder)
+        shape = ClotchPillShape
     ) {
         Text(
             text = label,
+            fontFamily = if (mono) JetBrainsMonoFamily else MaterialTheme.typography.labelSmall.fontFamily,
             style = MaterialTheme.typography.labelSmall,
             color = TextSecondary,
-            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
         )
     }
 }

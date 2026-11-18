@@ -1,6 +1,5 @@
 package com.example.ui.components
 
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -25,22 +24,15 @@ import androidx.compose.material.icons.filled.OpenInBrowser
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Tab
-import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -55,27 +47,25 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import coil.compose.AsyncImage
-import androidx.compose.material.icons.filled.Warning
-import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.window.Dialog
+import coil.compose.AsyncImage
 import com.example.R
 import com.example.discord.DiscordUserProfile
 import com.example.ui.theme.CarbonSurface
 import com.example.ui.theme.ClotchBlue
-import com.example.ui.theme.CrimsonAccent
 import com.example.ui.theme.DiscordBlurple
 import com.example.ui.theme.DiscordBlurpleMuted
 import com.example.ui.theme.ElevatedSlate
-import com.example.ui.theme.HairlineBorder
 import com.example.ui.theme.SignalEmerald
 import com.example.ui.theme.SlateCard
 import com.example.ui.theme.TextMuted
@@ -156,14 +146,14 @@ fun DiscordProfileCard(
     Surface(
         modifier = modifier.fillMaxWidth(),
         color = SlateCard,
-        shape = RoundedCornerShape(18.dp)
+        shape = ClotchCardShape
     ) {
         if (profile.isSignedIn) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
+                    .padding(18.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -226,11 +216,10 @@ fun DiscordProfileCard(
                         )
                     }
 
-                    IconButton(
+                    TactileIconButton(
                         onClick = onSignOutClick,
-                        modifier = Modifier
-                            .minimumInteractiveComponentSize()
-                            .testTag("discord_sign_out_button")
+                        hapticType = HapticFeedbackType.LongPress,
+                        modifier = Modifier.testTag("discord_sign_out_button")
                     ) {
                         Icon(
                             imageVector = Icons.AutoMirrored.Filled.Logout,
@@ -243,11 +232,10 @@ fun DiscordProfileCard(
                 Surface(
                     modifier = Modifier.fillMaxWidth(),
                     color = CarbonSurface,
-                    shape = RoundedCornerShape(12.dp),
-                    border = BorderStroke(1.dp, HairlineBorder)
+                    shape = ClotchInnerCardShape
                 ) {
                     Column(
-                        modifier = Modifier.padding(12.dp),
+                        modifier = Modifier.padding(14.dp),
                         verticalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
                         Text(
@@ -308,16 +296,13 @@ fun DiscordProfileCard(
                         }
                     }
 
-                    Button(
+                    TactilePillButton(
                         onClick = onSignInClick,
                         enabled = !isLoading,
                         modifier = Modifier.testTag("discord_sign_in_button"),
-                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
-                        shape = RoundedCornerShape(12.dp),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = DiscordBlurple,
-                            contentColor = TextPrimary
-                        )
+                        contentPadding = PaddingValues(horizontal = 18.dp, vertical = 10.dp),
+                        containerColor = DiscordBlurple,
+                        contentColor = TextPrimary
                     ) {
                         if (isLoading) {
                             CircularProgressIndicator(
@@ -345,12 +330,11 @@ fun DiscordSignInDisclaimerBanner(
 ) {
     Surface(
         modifier = modifier.fillMaxWidth(),
-        color = WarningAmberMuted.copy(alpha = 0.14f),
-        shape = RoundedCornerShape(10.dp),
-        border = BorderStroke(1.dp, CrimsonAccent.copy(alpha = 0.28f))
+        color = WarningAmberMuted.copy(alpha = 0.16f),
+        shape = RoundedCornerShape(14.dp)
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
             verticalAlignment = Alignment.Top,
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
@@ -359,13 +343,13 @@ fun DiscordSignInDisclaimerBanner(
                 contentDescription = null,
                 tint = WarningAmber,
                 modifier = Modifier
-                    .padding(top = 1.dp)
+                    .padding(top = 2.dp)
                     .size(14.dp)
             )
             Text(
                 text = stringResource(id = R.string.discord_signin_disclaimer),
                 style = MaterialTheme.typography.bodySmall,
-                color = WarningAmber.copy(alpha = 0.92f)
+                color = WarningAmber.copy(alpha = 0.94f)
             )
         }
     }
@@ -389,43 +373,60 @@ fun DiscordSignInDialog(
         Surface(
             modifier = Modifier.fillMaxWidth(),
             color = SlateCard,
-            shape = RoundedCornerShape(24.dp),
-            border = BorderStroke(1.dp, HairlineBorder)
+            shape = RoundedCornerShape(24.dp)
         ) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(20.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
+                    .padding(22.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    DiscordLogoBadge(size = 34.dp)
+                    DiscordLogoBadge(size = 36.dp)
                     Text(
                         text = "Sign in with Discord",
-                        style = MaterialTheme.typography.titleMedium,
+                        style = MaterialTheme.typography.titleLarge,
                         fontWeight = FontWeight.Bold,
                         color = TextPrimary
                     )
                 }
 
-                TabRow(
-                    selectedTabIndex = selectedTab,
-                    containerColor = CarbonSurface,
-                    contentColor = TextPrimary
+                Surface(
+                    color = CarbonSurface,
+                    shape = ClotchPillShape,
+                    modifier = Modifier.fillMaxWidth()
                 ) {
-                    Tab(
-                        selected = selectedTab == 0,
-                        onClick = { selectedTab = 0 },
-                        text = { Text("Token + RPC") }
-                    )
-                    Tab(
-                        selected = selectedTab == 1,
-                        onClick = { selectedTab = 1 },
-                        text = { Text("OAuth2 Browser") }
-                    )
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(4.dp),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        listOf("Token + RPC", "OAuth2 Browser").forEachIndexed { idx, label ->
+                            val selected = selectedTab == idx
+                            TactileSurface(
+                                onClick = { selectedTab = idx },
+                                modifier = Modifier.weight(1f),
+                                color = if (selected) ElevatedSlate else Color.Transparent,
+                                shape = ClotchPillShape,
+                                pressedScale = 0.96f
+                            ) {
+                                Box(
+                                    modifier = Modifier.padding(vertical = 10.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        text = label,
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = if (selected) TextPrimary else TextSecondary
+                                    )
+                                }
+                            }
+                        }
+                    }
                 }
 
                 if (selectedTab == 0) {
@@ -457,15 +458,8 @@ fun DiscordSignInDialog(
                         modifier = Modifier
                             .fillMaxWidth()
                             .testTag("dialog_discord_token_input"),
-                        shape = RoundedCornerShape(12.dp),
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = DiscordBlurple,
-                            unfocusedBorderColor = HairlineBorder,
-                            focusedContainerColor = CarbonSurface,
-                            unfocusedContainerColor = CarbonSurface,
-                            focusedTextColor = TextPrimary,
-                            unfocusedTextColor = TextPrimary
-                        )
+                        shape = ClotchInputShape,
+                        colors = clotchTonalFieldColors(accentColor = DiscordBlurple)
                     )
                 } else {
                     Text(
@@ -482,15 +476,8 @@ fun DiscordSignInDialog(
                         modifier = Modifier
                             .fillMaxWidth()
                             .testTag("dialog_oauth_client_id_input"),
-                        shape = RoundedCornerShape(12.dp),
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = ClotchBlue,
-                            unfocusedBorderColor = HairlineBorder,
-                            focusedContainerColor = CarbonSurface,
-                            unfocusedContainerColor = CarbonSurface,
-                            focusedTextColor = TextPrimary,
-                            unfocusedTextColor = TextPrimary
-                        )
+                        shape = ClotchInputShape,
+                        colors = clotchTonalFieldColors(accentColor = ClotchBlue)
                     )
                 }
 
@@ -504,14 +491,12 @@ fun DiscordSignInDialog(
                     }
                     Spacer(modifier = Modifier.width(8.dp))
                     if (selectedTab == 0) {
-                        Button(
+                        TactilePillButton(
                             onClick = { onSignInWithToken(tokenInput) },
                             enabled = !isLoading && tokenInput.isNotBlank(),
                             modifier = Modifier.testTag("dialog_discord_sign_in_button"),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = DiscordBlurple,
-                                contentColor = TextPrimary
-                            )
+                            containerColor = DiscordBlurple,
+                            contentColor = TextPrimary
                         ) {
                             if (isLoading) {
                                 CircularProgressIndicator(
@@ -524,14 +509,12 @@ fun DiscordSignInDialog(
                             }
                         }
                     } else {
-                        Button(
+                        TactilePillButton(
                             onClick = { onLaunchOAuthBrowser(clientIdInput) },
                             enabled = clientIdInput.isNotBlank(),
                             modifier = Modifier.testTag("dialog_discord_oauth_button"),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = ClotchBlue,
-                                contentColor = TextPrimary
-                            )
+                            containerColor = ClotchBlue,
+                            contentColor = TextPrimary
                         ) {
                             Icon(
                                 imageVector = Icons.Filled.OpenInBrowser,

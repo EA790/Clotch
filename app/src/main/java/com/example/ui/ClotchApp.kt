@@ -11,6 +11,11 @@ import android.os.Build
 import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -40,7 +45,6 @@ import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.VideoLibrary
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -70,8 +74,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
@@ -94,9 +100,12 @@ import com.example.data.RecordingMode
 import com.example.editor.EditorViewModel
 import com.example.recording.RecorderState
 import com.example.ui.components.DiscordSignInDialog
+import com.example.ui.components.TactileIconButton
+import com.example.ui.components.TactileSurface
 import com.example.ui.editor.EditorScreen
 import com.example.ui.screens.CaptureScreen
 import com.example.ui.screens.ClipsScreen
+import com.example.ui.screens.DeveloperDashboardScreen
 import com.example.ui.screens.HomeScreen
 import com.example.ui.screens.PresenceScreen
 import com.example.ui.screens.SettingsScreen
@@ -104,12 +113,13 @@ import com.example.ui.theme.CarbonSurface
 import com.example.ui.theme.ClotchBlue
 import com.example.ui.theme.ClotchBlueMuted
 import com.example.ui.theme.DiscordBlurple
-import com.example.ui.theme.HairlineBorder
 import com.example.ui.theme.ObsidianBg
 import com.example.ui.theme.SlateCard
 import com.example.ui.theme.TextPrimary
 import com.example.ui.theme.TextSecondary
 import kotlinx.coroutines.launch
+
+private const val ROUTE_DEVELOPER_DASHBOARD = "developer_dashboard"
 
 enum class ClotchRoute(
     val route: String,
@@ -134,6 +144,7 @@ fun ClotchApp(
     editorViewModel: EditorViewModel = viewModel()
 ) {
     val context = LocalContext.current
+    val haptic = LocalHapticFeedback.current
     val navController = rememberNavController()
     val backStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = backStackEntry?.destination?.route ?: ClotchRoute.Home.route
@@ -144,6 +155,7 @@ fun ClotchApp(
     val settings by viewModel.settings.collectAsStateWithLifecycle()
     val recorderState by viewModel.recorderState.collectAsStateWithLifecycle()
     val clips by viewModel.clips.collectAsStateWithLifecycle()
+    val isLoadingClips by viewModel.isLoadingClips.collectAsStateWithLifecycle()
     val discordState by viewModel.discordConnectionState.collectAsStateWithLifecycle()
     val discordPresence by viewModel.discordPresence.collectAsStateWithLifecycle()
     val discordProfile by viewModel.discordProfile.collectAsStateWithLifecycle()
@@ -245,6 +257,9 @@ fun ClotchApp(
     }
 
     fun navigateTo(route: ClotchRoute) {
+        if (currentRoute != route.route) {
+            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+        }
         if (currentRoute == ClotchRoute.Editor.route && route != ClotchRoute.Editor) {
             editorViewModel.stopPreviewForExit()
         }
@@ -367,8 +382,7 @@ fun ClotchApp(
                     }
                 }
 
-                HorizontalDivider(color = HairlineBorder)
-                Spacer(modifier = Modifier.height(8.dp))
+                Spacer(modifier = Modifier.height(12.dp))
 
                 ClotchRoute.entries.forEach { dest ->
                     val selected = currentRoute == dest.route
@@ -413,11 +427,9 @@ fun ClotchApp(
                         )
                     },
                     navigationIcon = {
-                        IconButton(
+                        TactileIconButton(
                             onClick = { coroutineScope.launch { drawerState.open() } },
-                            modifier = Modifier
-                                .minimumInteractiveComponentSize()
-                                .testTag("drawer_menu_button")
+                            modifier = Modifier.testTag("drawer_menu_button")
                         ) {
                             Icon(
                                 imageVector = Icons.Filled.Menu,
@@ -445,27 +457,27 @@ fun ClotchApp(
                                 )
                             }
                         } else {
-                            Surface(
+                            TactileSurface(
                                 onClick = { showSignInDialog = true },
                                 modifier = Modifier
-                                    .padding(end = 4.dp)
+                                    .padding(end = 6.dp)
                                     .testTag("topbar_sign_in_pill"),
                                 color = SlateCard,
-                                shape = RoundedCornerShape(50)
+                                shape = RoundedCornerShape(50),
+                                pressedScale = 0.94f,
+                                hapticType = HapticFeedbackType.LongPress
                             ) {
                                 Text(
                                     text = "Sign In",
                                     style = MaterialTheme.typography.labelMedium,
                                     color = TextPrimary,
-                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp)
                                 )
                             }
                         }
-                        IconButton(
+                        TactileIconButton(
                             onClick = { navigateTo(ClotchRoute.Settings) },
-                            modifier = Modifier
-                                .minimumInteractiveComponentSize()
-                                .testTag("topbar_settings_button")
+                            modifier = Modifier.testTag("topbar_settings_button")
                         ) {
                             Icon(
                                 imageVector = Icons.Filled.Settings,
@@ -489,42 +501,40 @@ fun ClotchApp(
                     ClotchRoute.Clips,
                     ClotchRoute.Settings
                 )
-                Column {
-                    HorizontalDivider(color = HairlineBorder)
-                    NavigationBar(
-                        containerColor = CarbonSurface,
-                        contentColor = TextPrimary,
-                        windowInsets = WindowInsets.navigationBars,
-                        tonalElevation = 0.dp
-                    ) {
-                        primaryTabs.forEach { dest ->
-                            val selected = currentRoute == dest.route
-                            NavigationBarItem(
-                                selected = selected,
-                                onClick = { navigateTo(dest) },
-                                icon = {
-                                    Icon(
-                                        imageVector = dest.icon,
-                                        contentDescription = dest.label
-                                    )
-                                },
-                                label = {
-                                    Text(
-                                        text = dest.label,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
-                                },
-                                modifier = Modifier.testTag("bottom_nav_${dest.route}"),
-                                colors = NavigationBarItemDefaults.colors(
-                                    selectedIconColor = ClotchBlue,
-                                    selectedTextColor = TextPrimary,
-                                    indicatorColor = ClotchBlueMuted,
-                                    unselectedIconColor = TextSecondary,
-                                    unselectedTextColor = TextSecondary
+                NavigationBar(
+                    containerColor = CarbonSurface,
+                    contentColor = TextPrimary,
+                    windowInsets = WindowInsets.navigationBars,
+                    tonalElevation = 0.dp
+                ) {
+                    primaryTabs.forEach { dest ->
+                        val selected = currentRoute == dest.route
+                        NavigationBarItem(
+                            selected = selected,
+                            onClick = { navigateTo(dest) },
+                            icon = {
+                                Icon(
+                                    imageVector = dest.icon,
+                                    contentDescription = dest.label
                                 )
+                            },
+                            label = {
+                                Text(
+                                    text = dest.label,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            },
+                            modifier = Modifier.testTag("bottom_nav_${dest.route}"),
+                            colors = NavigationBarItemDefaults.colors(
+                                selectedIconColor = ClotchBlue,
+                                selectedTextColor = TextPrimary,
+                                indicatorColor = ClotchBlueMuted,
+                                unselectedIconColor = TextSecondary,
+                                unselectedTextColor = TextSecondary
                             )
-                        }
+                        )
                     }
                 }
             }
@@ -532,6 +542,21 @@ fun ClotchApp(
             NavHost(
                 navController = navController,
                 startDestination = ClotchRoute.Home.route,
+                enterTransition = {
+                    fadeIn(animationSpec = tween(durationMillis = 190, easing = FastOutSlowInEasing)) +
+                        slideInVertically(animationSpec = tween(durationMillis = 190, easing = FastOutSlowInEasing)) {
+                            it / 32
+                        }
+                },
+                exitTransition = {
+                    fadeOut(animationSpec = tween(durationMillis = 140, easing = FastOutSlowInEasing))
+                },
+                popEnterTransition = {
+                    fadeIn(animationSpec = tween(durationMillis = 190, easing = FastOutSlowInEasing))
+                },
+                popExitTransition = {
+                    fadeOut(animationSpec = tween(durationMillis = 140, easing = FastOutSlowInEasing))
+                },
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(innerPadding)
@@ -620,6 +645,7 @@ fun ClotchApp(
                 composable(ClotchRoute.Clips.route) {
                     ClipsScreen(
                         clips = clips,
+                        isLoadingClips = isLoadingClips,
                         onRefreshClips = { viewModel.refreshClips() },
                         onDeleteClip = { viewModel.deleteClip(it) },
                         onEditClip = { clip ->
@@ -705,7 +731,19 @@ fun ClotchApp(
                         onSignOutDiscord = { viewModel.signOutDiscord() },
                         onRequestUsageAccess = { openUsageAccessSettings() },
                         onScanAppsNow = { viewModel.scanAppsNow() },
-                        onGeminiApiKeyChanged = { viewModel.setGeminiApiKey(it) }
+                        onGeminiApiKeyChanged = { viewModel.setGeminiApiKey(it) },
+                        onOpenDeveloperDashboard = {
+                            navController.navigate(ROUTE_DEVELOPER_DASHBOARD) {
+                                launchSingleTop = true
+                            }
+                        }
+                    )
+                }
+
+                composable(ROUTE_DEVELOPER_DASHBOARD) {
+                    DeveloperDashboardScreen(
+                        onBack = { navController.popBackStack() },
+                        onShowToast = { viewModel.showToast(it) }
                     )
                 }
             }
@@ -725,10 +763,12 @@ fun ClotchApp(
             },
             onLaunchOAuthBrowser = { clientId ->
                 val url = viewModel.buildOAuthUrlAndSaveClientId(clientId)
-                runCatching {
-                    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
-                }.onFailure {
-                    viewModel.showToast("Unable to open browser for Discord OAuth2")
+                if (url != null) {
+                    runCatching {
+                        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+                    }.onFailure {
+                        viewModel.showToast("Unable to open browser for Discord OAuth2")
+                    }
                 }
             }
         )

@@ -176,11 +176,12 @@ class ScreenRecordService : Service() {
         }
 
         val muxMicInVideo = !wantsGameAudio && hasMicPermission &&
-            (requestedSource == AudioCaptureSource.MIC_ONLY &&
-                !(settings.recordingMode == RecordingMode.VIDEO_ONLY && settings.recordAudioSeparately) ||
+            ((requestedSource == AudioCaptureSource.MIC_ONLY &&
+                !(settings.recordingMode == RecordingMode.VIDEO_ONLY && settings.recordAudioSeparately)) ||
                 requestedSource == AudioCaptureSource.BOTH)
 
-        val recordSeparateMic = hasMicPermission && (
+        // Never open two simultaneous MediaRecorder(AudioSource.MIC) sessions
+        val recordSeparateMic = hasMicPermission && !muxMicInVideo && (
             (wantsGameAudio && requestedSource == AudioCaptureSource.BOTH) ||
                 (settings.recordingMode == RecordingMode.VIDEO_ONLY && settings.recordAudioSeparately)
             )
@@ -291,7 +292,16 @@ class ScreenRecordService : Service() {
             )
 
             mediaRecorder?.start()
-            runCatching { separateAudioRecorder?.start() }
+            if (separateAudioRecorder != null) {
+                runCatching {
+                    separateAudioRecorder?.start()
+                }.onFailure {
+                    releaseSeparateAudioOnly()
+                    closeSeparateAudioHandles(deletePending = true)
+                    separateAudioFileName = null
+                    controller.showToast("Separate mic track skipped; recording video only")
+                }
+            }
             activeSegmentStartMs = SystemClock.elapsedRealtime()
 
             controller.onServiceRecordingStarted(
@@ -678,28 +688,60 @@ class ScreenRecordService : Service() {
         }
 
         val stagedFinal = File(cacheDir, finalFileName)
+        var videoPublished = false
         return@withContext try {
             val muxOk = if (tempGameM4a != null) {
                 GameAudioPostProcessor.muxVideoWithGameAudio(tempMp4, tempGameM4a, stagedFinal)
             } else if (targetFormat == VideoFormat.MKV) {
                 val cmd = "-y -i \"${tempMp4.absolutePath}\" -c copy \"${stagedFinal.absolutePath}\""
-                val session = FFmpegKit.execute(cmd)
-                ReturnCode.isSuccess(session.returnCode) && stagedFinal.exists() && stagedFinal.length() > 0L
+                val session = runCatching { FFmpegKit.execute(cmd) }.getOrNull()
+                session != null && ReturnCode.isSuccess(session.returnCode) &&
+                    stagedFinal.exists() && stagedFinal.length() > 0L
             } else {
                 false
             }
 
-            if (muxOk && stagedFinal.exists() && stagedFinal.length() > 0L) {
+            videoPublished = if (muxOk && stagedFinal.exists() && stagedFinal.length() > 0L) {
                 saveFileToMoviesMediaStore(stagedFinal, finalFileName, targetFormat.mimeType)
             } else {
                 val fallbackMp4Name = finalFileName.replace(".mkv", ".mp4", ignoreCase = true)
                 saveFileToMoviesMediaStore(tempMp4, fallbackMp4Name, VideoFormat.MP4.mimeType)
             }
-        } catch (e: Exception) {
-            controller.showToast("FFmpeg error: ${e.localizedMessage ?: "Post-process failed"}")
-            false
+
+            if (!videoPublished && tempMp4.exists() && tempMp4.length() > 0L) {
+                // Emergency fallback: preserve original video in app-external Movies/Clotch
+                val safeFallbackName = finalFileName.replace(".mkv", ".mp4", ignoreCase = true)
+                val fallbackDir = File(getExternalFilesDir(Environment.DIRECTORY_MOVIES), "Clotch")
+                if (!fallbackDir.exists()) fallbackDir.mkdirs()
+                val fallbackDest = File(fallbackDir, safeFallbackName)
+                videoPublished = runCatching {
+                    tempMp4.copyTo(fallbackDest, overwrite = true)
+                    fallbackDest.exists() && fallbackDest.length() > 0L
+                }.getOrDefault(false)
+            }
+            videoPublished
+        } catch (ce: kotlinx.coroutines.CancellationException) {
+            throw ce
+        } catch (t: Throwable) {
+            com.example.diagnostics.CrashLogger.logError(
+                "ScreenRecordService.PostProcess",
+                "Separate audio post-processing failed; attempting raw video preservation",
+                t
+            )
+            val fallbackMp4Name = finalFileName.replace(".mkv", ".mp4", ignoreCase = true)
+            videoPublished = if (tempMp4.exists() && tempMp4.length() > 0L) {
+                saveFileToMoviesMediaStore(tempMp4, fallbackMp4Name, VideoFormat.MP4.mimeType)
+            } else {
+                false
+            }
+            if (!videoPublished) {
+                controller.showToast("Audio separation failed; raw video preserved in cache if needed")
+            }
+            videoPublished
         } finally {
-            runCatching { tempMp4.delete() }
+            if (videoPublished) {
+                runCatching { tempMp4.delete() }
+            }
             runCatching { gamePcmFile?.delete() }
             runCatching { tempGameM4a?.delete() }
             runCatching { stagedFinal.delete() }

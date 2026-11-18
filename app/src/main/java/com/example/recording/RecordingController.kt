@@ -68,6 +68,9 @@ class RecordingController(private val context: Context) {
     private val _clips = MutableStateFlow<List<RecordedClip>>(emptyList())
     val clips: StateFlow<List<RecordedClip>> = _clips.asStateFlow()
 
+    private val _isLoadingClips = MutableStateFlow(true)
+    val isLoadingClips: StateFlow<Boolean> = _isLoadingClips.asStateFlow()
+
     private val _detectedApps = MutableStateFlow(DetectedAppsResult())
     val detectedApps: StateFlow<DetectedAppsResult> = _detectedApps.asStateFlow()
 
@@ -448,7 +451,12 @@ class RecordingController(private val context: Context) {
 
     fun refreshClips() {
         scope.launch {
-            _clips.value = clipsRepository.loadRecordedClips()
+            _isLoadingClips.value = true
+            try {
+                _clips.value = clipsRepository.loadRecordedClips()
+            } finally {
+                _isLoadingClips.value = false
+            }
         }
     }
 

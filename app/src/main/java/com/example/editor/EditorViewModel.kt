@@ -8,12 +8,16 @@ import android.widget.Toast
 import androidx.annotation.OptIn
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.exoplayer.DefaultLoadControl
+import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.SeekParameters
 import com.example.ClotchApplication
 import com.example.data.RecordedClip
 import com.example.diagnostics.CrashLogger
@@ -69,6 +73,9 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     private val _project = MutableStateFlow(EditorProject())
     val project: StateFlow<EditorProject> = _project.asStateFlow()
 
+    private val _playheadMs = MutableStateFlow(0L)
+    val playheadMs: StateFlow<Long> = _playheadMs.asStateFlow()
+
     private val _canUndo = MutableStateFlow(false)
     val canUndo: StateFlow<Boolean> = _canUndo.asStateFlow()
 
@@ -93,12 +100,35 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     private val _chromaPreviewBitmap = MutableStateFlow<Bitmap?>(null)
     val chromaPreviewBitmap: StateFlow<Bitmap?> = _chromaPreviewBitmap.asStateFlow()
 
-    val exoPlayer: ExoPlayer = ExoPlayer.Builder(application).build()
+    @OptIn(UnstableApi::class)
+    val exoPlayer: ExoPlayer = run {
+        val renderersFactory = DefaultRenderersFactory(application)
+            .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER)
+            .setEnableDecoderFallback(true)
+        val loadControl = DefaultLoadControl.Builder()
+            .setBufferDurationsMs(
+                2_000,
+                10_000,
+                250,
+                500
+            )
+            .setPrioritizeTimeOverSizeThresholds(true)
+            .build()
+        ExoPlayer.Builder(application, renderersFactory)
+            .setLoadControl(loadControl)
+            .setWakeMode(C.WAKE_MODE_LOCAL)
+            .build()
+            .apply {
+                setSeekParameters(SeekParameters.CLOSEST_SYNC)
+            }
+    }
     private val audioPreviewPlayers = mutableMapOf<String, ExoPlayer>()
     private val audioPlayerSignatures = mutableMapOf<String, String>()
 
     private var dragInitialSnapshot: EditorProject? = null
     private var lastLoadedSignature: String = ""
+    private var lastAppliedVideoVol: Float = -1f
+    private var lastAppliedSpeed: Float = -1f
     private var playbackTickerJob: Job? = null
     private var voiceoverTickerJob: Job? = null
     private var exportJob: Job? = null
@@ -109,10 +139,11 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
             override fun onIsPlayingChanged(isPlaying: Boolean) {
                 _isPlaying.value = isPlaying
                 if (isPlaying) {
-                    syncAudioPreviewToTimelineMs(_project.value.playheadMs)
+                    syncAudioPreviewToTimelineMs(_playheadMs.value)
                     startPlaybackTicker()
                 } else {
                     stopPlaybackTicker()
+                    _project.value = _project.value.copy(playheadMs = _playheadMs.value)
                     audioPreviewPlayers.values.forEach { it.pause() }
                 }
             }
@@ -135,14 +166,20 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     private fun updateProject(newState: EditorProject, recordUndo: Boolean = true) {
         val prev = _project.value
         if (prev == newState) return
-        if (recordUndo) {
-            history.pushSnapshot(prev)
+        val syncedState = if (newState.playheadMs != _playheadMs.value) {
+            _playheadMs.value = newState.playheadMs
+            newState
+        } else {
+            newState
         }
-        _project.value = newState
+        if (recordUndo) {
+            history.pushSnapshot(prev.copy(playheadMs = _playheadMs.value))
+        }
+        _project.value = syncedState
         _canUndo.value = history.canUndo
         _canRedo.value = history.canRedo
-        syncMedia3PlaylistIfNeeded(newState)
-        syncAudioPreviewIfNeeded(newState)
+        syncMedia3PlaylistIfNeeded(syncedState)
+        syncAudioPreviewIfNeeded(syncedState)
         applyLivePreviewPlaybackSettings()
     }
 
@@ -254,19 +291,22 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
 
     fun togglePlayPause() {
         if (_project.value.videoClips.isEmpty()) return
+        val currentPlayhead = _playheadMs.value
         if (exoPlayer.isPlaying) {
             exoPlayer.pause()
             audioPreviewPlayers.values.forEach { it.pause() }
+            _project.value = _project.value.copy(playheadMs = currentPlayhead)
         } else {
-            syncExoPlayerToTimelineMs(_project.value.playheadMs)
-            syncAudioPreviewToTimelineMs(_project.value.playheadMs)
+            syncExoPlayerToTimelineMs(currentPlayhead)
+            syncAudioPreviewToTimelineMs(currentPlayhead)
             exoPlayer.play()
-            playActiveAudioTracksAt(_project.value.playheadMs)
+            playActiveAudioTracksAt(currentPlayhead)
         }
     }
 
     fun pausePlayback() {
         stopPlaybackTicker()
+        _project.value = _project.value.copy(playheadMs = _playheadMs.value)
         if (exoPlayer.isPlaying) exoPlayer.pause()
         audioPreviewPlayers.values.forEach { if (it.isPlaying) it.pause() }
     }
@@ -274,6 +314,9 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     fun stopPreviewForExit() {
         stopPlaybackTicker()
         _isPlaying.value = false
+        _project.value = _project.value.copy(playheadMs = _playheadMs.value)
+        lastAppliedVideoVol = -1f
+        lastAppliedSpeed = -1f
         runCatching {
             if (exoPlayer.isPlaying) {
                 exoPlayer.pause()
@@ -295,12 +338,16 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     fun preparePreviewIfNeeded() {
         val current = _project.value
         if (current.videoClips.isEmpty()) return
+        val resumePlayhead = _playheadMs.value.coerceIn(0L, current.totalTimelineDurationMs.coerceAtLeast(0L))
+        _playheadMs.value = resumePlayhead
+        lastAppliedVideoVol = -1f
+        lastAppliedSpeed = -1f
 
         if (exoPlayer.playbackState == Player.STATE_IDLE || exoPlayer.mediaItemCount == 0) {
             lastLoadedSignature = ""
-            syncMedia3PlaylistIfNeeded(current)
+            syncMedia3PlaylistIfNeeded(current.copy(playheadMs = resumePlayhead))
         } else {
-            syncExoPlayerToTimelineMs(current.playheadMs)
+            syncExoPlayerToTimelineMs(resumePlayhead)
         }
 
         current.audioClips.forEach { audio ->
@@ -321,14 +368,17 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
                 player.prepare()
             }
         }
-        syncAudioPreviewToTimelineMs(current.playheadMs)
+        syncAudioPreviewToTimelineMs(resumePlayhead)
         applyLivePreviewPlaybackSettings()
     }
 
     fun seekTo(timelineMs: Long) {
         val maxDur = _project.value.totalTimelineDurationMs.coerceAtLeast(0L)
         val clamped = timelineMs.coerceIn(0L, maxDur)
-        _project.value = _project.value.copy(playheadMs = clamped)
+        _playheadMs.value = clamped
+        if (!exoPlayer.isPlaying) {
+            _project.value = _project.value.copy(playheadMs = clamped)
+        }
         syncExoPlayerToTimelineMs(clamped)
         syncAudioPreviewToTimelineMs(clamped)
     }
@@ -371,13 +421,14 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
 
     fun splitAtPlayhead() {
         val cur = _project.value
-        val targetWindow = cur.findVideoClipAt(cur.playheadMs) ?: return
+        val curPlayhead = _playheadMs.value
+        val targetWindow = cur.findVideoClipAt(curPlayhead) ?: return
         val clip = targetWindow.clip
         if (clip.isFreezeFrame) {
             showToast("Freeze frames cannot be split")
             return
         }
-        val offsetIntoClip = cur.playheadMs - targetWindow.timelineStartMs
+        val offsetIntoClip = curPlayhead - targetWindow.timelineStartMs
         if (offsetIntoClip < 250L || clip.effectiveDurationMs - offsetIntoClip < 250L) {
             showToast("Move playhead at least 0.25s inside a clip to split")
             return
@@ -397,6 +448,7 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
         updateProject(
             cur.copy(
                 videoClips = mutable,
+                playheadMs = curPlayhead,
                 selectedVideoClipId = rightPart.id,
                 selectedAudioClipId = null,
                 selectedOverlayId = null,
@@ -527,7 +579,8 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun undo() {
-        val previous = history.undo(_project.value) ?: return
+        val previous = history.undo(_project.value.copy(playheadMs = _playheadMs.value)) ?: return
+        _playheadMs.value = previous.playheadMs
         _project.value = previous
         _canUndo.value = history.canUndo
         _canRedo.value = history.canRedo
@@ -537,7 +590,8 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun redo() {
-        val next = history.redo(_project.value) ?: return
+        val next = history.redo(_project.value.copy(playheadMs = _playheadMs.value)) ?: return
+        _playheadMs.value = next.playheadMs
         _project.value = next
         _canUndo.value = history.canUndo
         _canRedo.value = history.canRedo
@@ -625,36 +679,42 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
         }
         viewModelScope.launch {
             _isBusy.value = true
-            when (val res = FFmpegEditorEngine.extractAudioToM4a(app, target)) {
-                is ExtractAudioResult.Success -> {
-                    val latest = _project.value
-                    val startMs = latest.clipStartTimeMs(target.id)
-                    val audioClip = TimelineAudioClip(
-                        sourceUri = res.uri,
-                        displayName = "${target.displayName} (Audio)",
-                        kind = AudioClipKind.EXTRACTED,
-                        timelineStartMs = startMs,
-                        sourceDurationMs = res.durationMs,
-                        trimStartMs = 0L,
-                        trimEndMs = res.durationMs
-                    )
-                    val updatedVideo = latest.videoClips.map {
-                        if (it.id == target.id) it.copy(audioDetached = true) else it
+            try {
+                when (val res = FFmpegEditorEngine.extractAudioToM4a(app, target)) {
+                    is ExtractAudioResult.Success -> {
+                        val latest = _project.value
+                        val startMs = latest.clipStartTimeMs(target.id)
+                        val audioClip = TimelineAudioClip(
+                            sourceUri = res.uri,
+                            displayName = "${target.displayName} (Audio)",
+                            kind = AudioClipKind.EXTRACTED,
+                            timelineStartMs = startMs,
+                            sourceDurationMs = res.durationMs,
+                            trimStartMs = 0L,
+                            trimEndMs = res.durationMs
+                        )
+                        val updatedVideo = latest.videoClips.map {
+                            if (it.id == target.id) it.copy(audioDetached = true) else it
+                        }
+                        updateProject(
+                            latest.copy(
+                                videoClips = updatedVideo,
+                                audioClips = latest.audioClips + audioClip,
+                                selectedAudioClipId = audioClip.id,
+                                selectedVideoClipId = null
+                            ),
+                            recordUndo = true
+                        )
+                        showToast("Audio extracted to audio track")
                     }
-                    updateProject(
-                        latest.copy(
-                            videoClips = updatedVideo,
-                            audioClips = latest.audioClips + audioClip,
-                            selectedAudioClipId = audioClip.id,
-                            selectedVideoClipId = null
-                        ),
-                        recordUndo = true
-                    )
-                    showToast("Audio extracted to audio track")
+                    is ExtractAudioResult.Failure -> showToast(res.message)
                 }
-                is ExtractAudioResult.Failure -> showToast(res.message)
+            } catch (t: Throwable) {
+                CrashLogger.logError("EditorViewModel.extractAudio", "Unexpected failure extracting audio", t)
+                showToast("Unable to extract audio")
+            } finally {
+                _isBusy.value = false
             }
-            _isBusy.value = false
         }
     }
 
@@ -668,7 +728,7 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
                     sourceUri = uri,
                     displayName = info.displayName,
                     kind = AudioClipKind.BGM,
-                    timelineStartMs = cur.playheadMs,
+                    timelineStartMs = _playheadMs.value,
                     sourceDurationMs = info.durationMs,
                     trimStartMs = 0L,
                     trimEndMs = info.durationMs,
@@ -695,28 +755,30 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     fun startVoiceover() {
         if (_voiceoverState.value is VoiceoverState.Recording) return
         pausePlayback()
-        val anchorMs = _project.value.playheadMs
-        val file = voiceoverRecorder.startRecording()
-        if (file == null) {
-            showToast("Unable to start microphone voiceover")
-            return
-        }
-        _voiceoverState.value = VoiceoverState.Recording(
-            startedAtPlayheadMs = anchorMs,
-            elapsedMs = 0L,
-            outputFilePath = file.absolutePath
-        )
-        voiceoverTickerJob?.cancel()
-        voiceoverTickerJob = viewModelScope.launch {
-            val startWall = System.currentTimeMillis()
-            while (isActive && _voiceoverState.value is VoiceoverState.Recording) {
-                val elapsed = System.currentTimeMillis() - startWall
-                _voiceoverState.value = VoiceoverState.Recording(
-                    startedAtPlayheadMs = anchorMs,
-                    elapsedMs = elapsed,
-                    outputFilePath = file.absolutePath
-                )
-                delay(100L)
+        val anchorMs = _playheadMs.value
+        viewModelScope.launch {
+            val file = withContext(Dispatchers.IO) { voiceoverRecorder.startRecording() }
+            if (file == null) {
+                showToast("Unable to start microphone voiceover")
+                return@launch
+            }
+            _voiceoverState.value = VoiceoverState.Recording(
+                startedAtPlayheadMs = anchorMs,
+                elapsedMs = 0L,
+                outputFilePath = file.absolutePath
+            )
+            voiceoverTickerJob?.cancel()
+            voiceoverTickerJob = viewModelScope.launch {
+                val startWall = System.currentTimeMillis()
+                while (isActive && _voiceoverState.value is VoiceoverState.Recording) {
+                    val elapsed = System.currentTimeMillis() - startWall
+                    _voiceoverState.value = VoiceoverState.Recording(
+                        startedAtPlayheadMs = anchorMs,
+                        elapsedMs = elapsed,
+                        outputFilePath = file.absolutePath
+                    )
+                    delay(100L)
+                }
             }
         }
     }
@@ -725,31 +787,33 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
         val currentRec = _voiceoverState.value as? VoiceoverState.Recording ?: return
         voiceoverTickerJob?.cancel()
         _voiceoverState.value = VoiceoverState.Idle
-        val result = voiceoverRecorder.stopRecording()
-        if (result == null) {
-            showToast("Voiceover recording was empty")
-            return
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) { voiceoverRecorder.stopRecording() }
+            if (result == null) {
+                showToast("Voiceover recording was empty")
+                return@launch
+            }
+            val cur = _project.value
+            val voiceClip = TimelineAudioClip(
+                sourceUri = result.uri,
+                displayName = "Voiceover",
+                kind = AudioClipKind.VOICEOVER,
+                timelineStartMs = currentRec.startedAtPlayheadMs,
+                sourceDurationMs = result.durationMs,
+                trimStartMs = 0L,
+                trimEndMs = result.durationMs,
+                volume = 1.2f
+            )
+            updateProject(
+                cur.copy(
+                    audioClips = cur.audioClips + voiceClip,
+                    selectedAudioClipId = voiceClip.id,
+                    selectedVideoClipId = null
+                ),
+                recordUndo = true
+            )
+            showToast("Voiceover added to timeline")
         }
-        val cur = _project.value
-        val voiceClip = TimelineAudioClip(
-            sourceUri = result.uri,
-            displayName = "Voiceover",
-            kind = AudioClipKind.VOICEOVER,
-            timelineStartMs = currentRec.startedAtPlayheadMs,
-            sourceDurationMs = result.durationMs,
-            trimStartMs = 0L,
-            trimEndMs = result.durationMs,
-            volume = 1.2f
-        )
-        updateProject(
-            cur.copy(
-                audioClips = cur.audioClips + voiceClip,
-                selectedAudioClipId = voiceClip.id,
-                selectedVideoClipId = null
-            ),
-            recordUndo = true
-        )
-        showToast("Voiceover added to timeline")
     }
 
     // ==================== Stage 2 Feature Actions ====================
@@ -833,9 +897,10 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
         opacity: Float
     ) {
         val cur = _project.value
-        val targetWindow = cur.findVideoClipAt(cur.playheadMs) ?: return
+        val curPlayhead = _playheadMs.value
+        val targetWindow = cur.findVideoClipAt(curPlayhead) ?: return
         val clip = targetWindow.clip
-        val localOffset = (cur.playheadMs - targetWindow.timelineStartMs).coerceIn(0L, clip.effectiveDurationMs)
+        val localOffset = (curPlayhead - targetWindow.timelineStartMs).coerceIn(0L, clip.effectiveDurationMs)
 
         val newKf = ClipKeyframe(
             timeOffsetMs = localOffset,
@@ -891,16 +956,20 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
 
     fun insertFreezeFrameAtPlayhead(durationMs: Long = 3000L) {
         val cur = _project.value
-        val window = cur.findVideoClipAt(cur.playheadMs) ?: return
+        val curPlayhead = _playheadMs.value
+        val window = cur.findVideoClipAt(curPlayhead) ?: return
         val clip = window.clip
-        val offsetInClip = (cur.playheadMs - window.timelineStartMs).coerceIn(0L, clip.effectiveDurationMs)
+        val offsetInClip = (curPlayhead - window.timelineStartMs).coerceIn(0L, clip.effectiveDurationMs)
         val sourceTimeMs = (clip.trimStartMs + (offsetInClip * clip.speed).toLong())
             .coerceIn(clip.trimStartMs, clip.trimEndMs)
 
         viewModelScope.launch {
             _isBusy.value = true
-            val result = FFmpegEditorEngine.createFreezeFrameMedia(app, clip, sourceTimeMs, durationMs)
-            _isBusy.value = false
+            val result = try {
+                FFmpegEditorEngine.createFreezeFrameMedia(app, clip, sourceTimeMs, durationMs)
+            } finally {
+                _isBusy.value = false
+            }
             if (result == null) {
                 showToast("Unable to capture freeze frame")
                 return@launch
@@ -949,9 +1018,10 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
             return
         }
         val cur = _project.value
-        val window = cur.findVideoClipAt(cur.playheadMs)
+        val curPlayhead = _playheadMs.value
+        val window = cur.findVideoClipAt(curPlayhead)
         val sampleSourceMs = if (window != null && window.clip.id == clip.id) {
-            val offset = (cur.playheadMs - window.timelineStartMs).coerceIn(0L, clip.effectiveDurationMs)
+            val offset = (curPlayhead - window.timelineStartMs).coerceIn(0L, clip.effectiveDurationMs)
             clip.trimStartMs + (offset * clip.speed).toLong()
         } else {
             clip.trimStartMs + clip.sourceSpanMs / 2L
@@ -1003,7 +1073,7 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
         val cur = _project.value
         val overlay = TimelineTextOverlay(
             text = trimmed,
-            timelineStartMs = cur.playheadMs,
+            timelineStartMs = _playheadMs.value,
             durationMs = 3000L,
             fontChoice = fontChoice,
             colorArgb = colorArgb,
@@ -1059,7 +1129,7 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
         val cur = _project.value
         val sticker = TimelineSticker(
             emoji = emoji,
-            timelineStartMs = cur.playheadMs,
+            timelineStartMs = _playheadMs.value,
             durationMs = 3000L,
             posX = 0.5f,
             posY = 0.35f,
@@ -1095,7 +1165,7 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
 
     fun generateAutoCaptions(mode: AutoCaptionMode, geminiApiKey: String) {
         val cur = _project.value
-        val window = cur.findVideoClipAt(cur.playheadMs) ?: cur.videoWindows().firstOrNull()
+        val window = cur.findVideoClipAt(_playheadMs.value) ?: cur.videoWindows().firstOrNull()
         if (window == null) {
             showToast("Import a video clip before generating captions")
             return
@@ -1140,7 +1210,7 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun startOfflineSpeechCaption() {
-        val anchorMs = _project.value.playheadMs
+        val anchorMs = _playheadMs.value
         _autoCaptionState.value = AutoCaptionState.ListeningOffline("Listening on-device (speak now)...")
         captionEngine.startOfflineSpeechCapture(
             playheadAnchorMs = anchorMs,
@@ -1183,7 +1253,7 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     fun exportProject(config: EditorExportConfig) {
         if (_exportState.value is EditorExportState.Exporting) return
         pausePlayback()
-        val snapshot = _project.value
+        val snapshot = _project.value.copy(playheadMs = _playheadMs.value)
         exportJob?.cancel()
         exportJob = viewModelScope.launch {
             _exportState.value = EditorExportState.Exporting(0f, "Preparing export...")
@@ -1323,23 +1393,33 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    private fun applyLivePreviewPlaybackSettings() {
+    private fun applyLivePreviewPlaybackSettings(playheadMsOverride: Long = _playheadMs.value) {
         val cur = _project.value
-        val activeWindow = cur.findVideoClipAt(cur.playheadMs)
+        val activeWindow = cur.findVideoClipAt(playheadMsOverride)
         val activeClip = activeWindow?.clip
         val vidVol = activeClip?.effectiveVolume?.coerceIn(0f, 1f) ?: 1f
         val speed = activeClip?.speed?.coerceIn(0.5f, 4.0f) ?: 1.0f
-        exoPlayer.volume = vidVol
-        exoPlayer.playbackParameters = PlaybackParameters(speed, 1.0f)
+
+        if (vidVol != lastAppliedVideoVol) {
+            exoPlayer.volume = vidVol
+            lastAppliedVideoVol = vidVol
+        }
+        if (speed != lastAppliedSpeed) {
+            exoPlayer.playbackParameters = PlaybackParameters(speed, 1.0f)
+            lastAppliedSpeed = speed
+        }
 
         val isPlayingNow = exoPlayer.isPlaying
         cur.audioClips.forEach { audio ->
             val player = audioPreviewPlayers[audio.id] ?: return@forEach
-            val inWindow = cur.playheadMs in audio.timelineStartMs until audio.timelineEndMs
-            player.volume = if (inWindow) audio.effectiveVolume.coerceIn(0f, 1f) else 0f
+            val inWindow = playheadMsOverride in audio.timelineStartMs until audio.timelineEndMs
+            val targetVol = if (inWindow) audio.effectiveVolume.coerceIn(0f, 1f) else 0f
+            if (player.volume != targetVol) {
+                player.volume = targetVol
+            }
             if (isPlayingNow) {
                 if (inWindow && !player.isPlaying) {
-                    val offset = (cur.playheadMs - audio.timelineStartMs).coerceIn(0L, audio.effectiveDurationMs)
+                    val offset = (playheadMsOverride - audio.timelineStartMs).coerceIn(0L, audio.effectiveDurationMs)
                     player.seekTo(offset)
                     player.play()
                 } else if (!inWindow && player.isPlaying) {
@@ -1360,8 +1440,10 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
                     val clip = windows[idx].clip
                     val scaledPos = (exoPlayer.currentPosition.coerceAtLeast(0L) / clip.speed.coerceIn(0.5f, 4f)).toLong()
                     val globalPos = windows[idx].timelineStartMs + scaledPos
-                    _project.value = cur.copy(playheadMs = globalPos)
-                    applyLivePreviewPlaybackSettings()
+                    if (_playheadMs.value != globalPos) {
+                        _playheadMs.value = globalPos
+                    }
+                    applyLivePreviewPlaybackSettings(playheadMsOverride = globalPos)
                 }
                 delay(33L)
             }

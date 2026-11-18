@@ -1,9 +1,7 @@
 package com.example.ui.screens
 
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -21,6 +19,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material.icons.outlined.AutoAwesome
@@ -28,8 +27,7 @@ import androidx.compose.material.icons.outlined.Hub
 import androidx.compose.material.icons.outlined.Mic
 import androidx.compose.material.icons.outlined.Notifications
 import androidx.compose.material.icons.outlined.Tune
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExposedDropdownMenuBox
@@ -38,13 +36,12 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.MenuAnchorType
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -53,13 +50,14 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
+import com.example.BuildConfig
 import com.example.data.AudioCaptureSource
 import com.example.data.BitrateOption
 import com.example.data.ClotchSettings
@@ -69,16 +67,23 @@ import com.example.data.OrientationOption
 import com.example.data.RecordingMode
 import com.example.data.VideoFormat
 import com.example.data.VideoResolution
+import com.example.diagnostics.DeveloperStatsMonitor
 import com.example.discord.DiscordConnectionState
 import com.example.discord.DiscordUserProfile
+import com.example.ui.components.ClotchCardShape
+import com.example.ui.components.ClotchInnerCardShape
+import com.example.ui.components.ClotchInputShape
 import com.example.ui.components.DiscordProfileCard
+import com.example.ui.components.TactileOptionPill
+import com.example.ui.components.TactilePillButton
+import com.example.ui.components.TactileSurface
+import com.example.ui.components.clotchTonalFieldColors
 import com.example.ui.theme.CarbonSurface
 import com.example.ui.theme.ClotchBlue
-import com.example.ui.theme.ClotchBlueMuted
+import com.example.ui.theme.CrimsonAccent
 import com.example.ui.theme.DiscordBlurple
-import com.example.ui.theme.DiscordBlurpleMuted
 import com.example.ui.theme.ElevatedSlate
-import com.example.ui.theme.HairlineBorder
+import com.example.ui.theme.JetBrainsMonoFamily
 import com.example.ui.theme.SignalEmerald
 import com.example.ui.theme.SlateCard
 import com.example.ui.theme.TextMuted
@@ -113,6 +118,7 @@ fun SettingsScreen(
     onRequestUsageAccess: () -> Unit,
     onScanAppsNow: () -> Unit,
     onGeminiApiKeyChanged: (String) -> Unit = {},
+    onOpenDeveloperDashboard: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val scrollState = rememberScrollState()
@@ -122,23 +128,23 @@ fun SettingsScreen(
     var showToken by remember { mutableStateOf(false) }
     var showGeminiKey by remember { mutableStateOf(false) }
     var formatDropdownExpanded by remember { mutableStateOf(false) }
+    var showDevPasswordDialog by remember { mutableStateOf(false) }
 
     Column(
         modifier = modifier
             .fillMaxSize()
             .verticalScroll(scrollState)
-            .padding(horizontal = 20.dp, vertical = 12.dp),
+            .padding(horizontal = 20.dp, vertical = 16.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Column(
             modifier = Modifier.widthIn(max = 560.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
+            verticalArrangement = Arrangement.spacedBy(20.dp)
         ) {
-            Column {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text(
                     text = "Settings",
                     style = MaterialTheme.typography.headlineMedium,
-                    fontWeight = FontWeight.Bold,
                     color = TextPrimary
                 )
                 Text(
@@ -183,15 +189,8 @@ fun SettingsScreen(
                             .fillMaxWidth()
                             .menuAnchor(MenuAnchorType.PrimaryNotEditable, enabled = true)
                             .testTag("video_format_dropdown"),
-                        shape = RoundedCornerShape(12.dp),
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = ClotchBlue,
-                            unfocusedBorderColor = HairlineBorder,
-                            focusedContainerColor = CarbonSurface,
-                            unfocusedContainerColor = CarbonSurface,
-                            focusedTextColor = TextPrimary,
-                            unfocusedTextColor = TextPrimary
-                        )
+                        shape = ClotchInputShape,
+                        colors = clotchTonalFieldColors(accentColor = ClotchBlue)
                     )
                     ExposedDropdownMenu(
                         expanded = formatDropdownExpanded,
@@ -227,7 +226,7 @@ fun SettingsScreen(
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     VideoResolution.entries.forEach { option ->
-                        OptionPill(
+                        TactileOptionPill(
                             label = option.label,
                             selected = settings.resolution == option,
                             accent = ClotchBlue,
@@ -244,7 +243,7 @@ fun SettingsScreen(
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     FrameRateOption.entries.forEach { option ->
-                        OptionPill(
+                        TactileOptionPill(
                             label = option.label,
                             selected = settings.fps == option,
                             accent = ClotchBlue,
@@ -261,7 +260,7 @@ fun SettingsScreen(
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     BitrateOption.entries.forEach { option ->
-                        OptionPill(
+                        TactileOptionPill(
                             label = option.label,
                             selected = settings.bitrate == option,
                             accent = ClotchBlue,
@@ -278,7 +277,7 @@ fun SettingsScreen(
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     OrientationOption.entries.forEach { option ->
-                        OptionPill(
+                        TactileOptionPill(
                             label = option.label,
                             selected = settings.orientation == option,
                             accent = ClotchBlue,
@@ -301,7 +300,7 @@ fun SettingsScreen(
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     RecordingMode.entries.forEach { mode ->
-                        OptionPill(
+                        TactileOptionPill(
                             label = mode.label,
                             selected = settings.recordingMode == mode,
                             accent = SignalEmerald,
@@ -315,7 +314,7 @@ fun SettingsScreen(
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(top = 6.dp),
+                            .padding(top = 8.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         OptionGroupLabel("Audio Source")
@@ -328,7 +327,7 @@ fun SettingsScreen(
                                 AudioCaptureSource.MIC_ONLY,
                                 AudioCaptureSource.BOTH
                             ).forEach { source ->
-                                OptionPill(
+                                TactileOptionPill(
                                     label = source.label,
                                     selected = settings.effectiveAudioSource == source,
                                     accent = SignalEmerald,
@@ -359,10 +358,9 @@ fun SettingsScreen(
                             .fillMaxWidth()
                             .padding(top = 6.dp),
                         color = CarbonSurface,
-                        shape = RoundedCornerShape(12.dp),
-                        border = BorderStroke(1.dp, HairlineBorder)
+                        shape = ClotchInnerCardShape
                     ) {
-                        Box(modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)) {
+                        Box(modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp)) {
                             SettingsToggleRow(
                                 icon = Icons.Outlined.Mic,
                                 title = "Record Audio Separately",
@@ -382,7 +380,7 @@ fun SettingsScreen(
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     CountdownOption.entries.forEach { option ->
-                        OptionPill(
+                        TactileOptionPill(
                             label = option.label,
                             selected = settings.countdown == option,
                             accent = SignalEmerald,
@@ -422,33 +420,26 @@ fun SettingsScreen(
                     horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     if (!hasUsageStatsPermission) {
-                        Button(
+                        TactilePillButton(
                             onClick = onRequestUsageAccess,
                             modifier = Modifier
                                 .weight(1f)
                                 .height(48.dp)
                                 .testTag("settings_usage_access_button"),
-                            shape = RoundedCornerShape(12.dp),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = ClotchBlue,
-                                contentColor = TextPrimary
-                            )
+                            containerColor = ClotchBlue,
+                            contentColor = TextPrimary
                         ) {
                             Text("Grant Usage Access (Apps)")
                         }
                     } else {
-                        OutlinedButton(
+                        TactilePillButton(
                             onClick = onScanAppsNow,
                             modifier = Modifier
                                 .weight(1f)
                                 .height(48.dp)
                                 .testTag("settings_scan_apps_button"),
-                            shape = RoundedCornerShape(12.dp),
-                            border = BorderStroke(1.dp, HairlineBorder),
-                            colors = ButtonDefaults.outlinedButtonColors(
-                                containerColor = CarbonSurface,
-                                contentColor = SignalEmerald
-                            )
+                            containerColor = CarbonSurface,
+                            contentColor = SignalEmerald
                         ) {
                             Text("Usage Access Granted • Scan Apps")
                         }
@@ -467,15 +458,8 @@ fun SettingsScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .testTag("settings_game_name_input"),
-                    shape = RoundedCornerShape(12.dp),
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = DiscordBlurple,
-                        unfocusedBorderColor = HairlineBorder,
-                        focusedContainerColor = CarbonSurface,
-                        unfocusedContainerColor = CarbonSurface,
-                        focusedTextColor = TextPrimary,
-                        unfocusedTextColor = TextPrimary
-                    )
+                    shape = ClotchInputShape,
+                    colors = clotchTonalFieldColors(accentColor = DiscordBlurple)
                 )
 
                 OutlinedTextField(
@@ -507,15 +491,8 @@ fun SettingsScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .testTag("discord_token_input"),
-                    shape = RoundedCornerShape(12.dp),
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = DiscordBlurple,
-                        unfocusedBorderColor = HairlineBorder,
-                        focusedContainerColor = CarbonSurface,
-                        unfocusedContainerColor = CarbonSurface,
-                        focusedTextColor = TextPrimary,
-                        unfocusedTextColor = TextPrimary
-                    )
+                    shape = ClotchInputShape,
+                    colors = clotchTonalFieldColors(accentColor = DiscordBlurple)
                 )
 
                 Text(
@@ -528,17 +505,14 @@ fun SettingsScreen(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    Button(
+                    TactilePillButton(
                         onClick = { onTestDiscordConnection(tokenInput) },
                         modifier = Modifier
                             .weight(1f)
                             .height(48.dp)
                             .testTag("test_discord_rpc_button"),
-                        shape = RoundedCornerShape(12.dp),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = DiscordBlurple,
-                            contentColor = TextPrimary
-                        )
+                        containerColor = DiscordBlurple,
+                        contentColor = TextPrimary
                     ) {
                         Text(
                             text = if (discordState is DiscordConnectionState.Connecting) {
@@ -551,14 +525,11 @@ fun SettingsScreen(
                     }
 
                     if (discordState is DiscordConnectionState.Connected) {
-                        Button(
+                        TactilePillButton(
                             onClick = onDisconnectDiscord,
                             modifier = Modifier.height(48.dp),
-                            shape = RoundedCornerShape(12.dp),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = ElevatedSlate,
-                                contentColor = TextSecondary
-                            )
+                            containerColor = ElevatedSlate,
+                            contentColor = TextSecondary
                         ) {
                             Text("Disconnect", style = MaterialTheme.typography.labelLarge)
                         }
@@ -607,15 +578,8 @@ fun SettingsScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .testTag("gemini_api_key_input"),
-                    shape = RoundedCornerShape(12.dp),
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = ClotchBlue,
-                        unfocusedBorderColor = HairlineBorder,
-                        focusedContainerColor = CarbonSurface,
-                        unfocusedContainerColor = CarbonSurface,
-                        focusedTextColor = TextPrimary,
-                        unfocusedTextColor = TextPrimary
-                    )
+                    shape = ClotchInputShape,
+                    colors = clotchTonalFieldColors(accentColor = ClotchBlue)
                 )
 
                 Text(
@@ -629,9 +593,134 @@ fun SettingsScreen(
                 )
             }
 
+            // Subtle Build Info & Hidden Developer Dashboard Trigger
+            TactileSurface(
+                onClick = { showDevPasswordDialog = true },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("settings_dev_unlock_row"),
+                color = CarbonSurface,
+                shape = ClotchInnerCardShape,
+                pressedScale = 0.97f
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 18.dp, vertical = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(
+                            text = "Clotch v${BuildConfig.VERSION_NAME} (Build ${BuildConfig.VERSION_CODE})",
+                            fontFamily = JetBrainsMonoFamily,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = TextSecondary
+                        )
+                        Text(
+                            text = "ShutBerry • Tap for Developer Diagnostics",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = TextMuted
+                        )
+                    }
+                    Icon(
+                        imageVector = Icons.Filled.Lock,
+                        contentDescription = "Unlock Developer Dashboard",
+                        tint = TextMuted,
+                        modifier = Modifier.size(16.dp)
+                    )
+                }
+            }
+
             Spacer(modifier = Modifier.height(12.dp))
         }
     }
+
+    if (showDevPasswordDialog) {
+        DeveloperPasswordPromptDialog(
+            onDismiss = { showDevPasswordDialog = false },
+            onUnlocked = {
+                showDevPasswordDialog = false
+                onOpenDeveloperDashboard()
+            }
+        )
+    }
+}
+
+@Composable
+private fun DeveloperPasswordPromptDialog(
+    onDismiss: () -> Unit,
+    onUnlocked: () -> Unit
+) {
+    var password by remember { mutableStateOf("") }
+    var errorMsg by remember { mutableStateOf<String?>(null) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = SlateCard,
+        shape = RoundedCornerShape(24.dp),
+        titleContentColor = TextPrimary,
+        textContentColor = TextSecondary,
+        title = {
+            Text(
+                text = "Developer Access",
+                style = MaterialTheme.typography.titleLarge
+            )
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    text = "Enter the developer password to open real-time telemetry and diagnostic dumps.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = TextSecondary
+                )
+                OutlinedTextField(
+                    value = password,
+                    onValueChange = {
+                        password = it
+                        errorMsg = null
+                    },
+                    label = { Text("Password") },
+                    singleLine = true,
+                    visualTransformation = PasswordVisualTransformation(),
+                    isError = errorMsg != null,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("dev_password_input"),
+                    shape = ClotchInputShape,
+                    colors = clotchTonalFieldColors(accentColor = ClotchBlue)
+                )
+                if (errorMsg != null) {
+                    Text(
+                        text = errorMsg!!,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = CrimsonAccent
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TactilePillButton(
+                onClick = {
+                    if (DeveloperStatsMonitor.verifyPassword(password)) {
+                        onUnlocked()
+                    } else {
+                        errorMsg = "Incorrect password"
+                    }
+                },
+                modifier = Modifier.testTag("dev_password_submit_button"),
+                containerColor = ClotchBlue,
+                contentColor = TextPrimary
+            ) {
+                Text("Unlock")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel", color = TextSecondary)
+            }
+        }
+    )
 }
 
 @Composable
@@ -644,12 +733,12 @@ private fun SettingsSectionCard(
     Surface(
         modifier = Modifier.fillMaxWidth(),
         color = SlateCard,
-        shape = RoundedCornerShape(18.dp)
+        shape = ClotchCardShape
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(18.dp),
+                .padding(20.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             Row(
@@ -683,45 +772,6 @@ private fun OptionGroupLabel(text: String) {
 }
 
 @Composable
-private fun OptionPill(
-    label: String,
-    selected: Boolean,
-    accent: Color,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier
-) {
-    val bgColor = when {
-        selected && accent == ClotchBlue -> ClotchBlueMuted
-        selected && accent == DiscordBlurple -> DiscordBlurpleMuted
-        selected -> accent.copy(alpha = 0.2f)
-        else -> CarbonSurface
-    }
-    Surface(
-        modifier = modifier
-            .minimumInteractiveComponentSize()
-            .clip(RoundedCornerShape(10.dp))
-            .clickable(onClick = onClick),
-        color = bgColor,
-        shape = RoundedCornerShape(10.dp),
-        border = BorderStroke(
-            width = if (selected) 1.5.dp else 1.dp,
-            color = if (selected) accent else HairlineBorder
-        )
-    ) {
-        Box(
-            modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
-            contentAlignment = Alignment.Center
-        ) {
-            Text(
-                text = label,
-                style = MaterialTheme.typography.labelMedium,
-                color = if (selected) TextPrimary else TextSecondary
-            )
-        }
-    }
-}
-
-@Composable
 private fun SettingsToggleRow(
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     title: String,
@@ -730,6 +780,7 @@ private fun SettingsToggleRow(
     onCheckedChange: (Boolean) -> Unit,
     testTag: String
 ) {
+    val haptic = LocalHapticFeedback.current
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -763,14 +814,17 @@ private fun SettingsToggleRow(
         }
         Switch(
             checked = checked,
-            onCheckedChange = onCheckedChange,
+            onCheckedChange = {
+                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                onCheckedChange(it)
+            },
             modifier = Modifier.testTag(testTag),
             colors = SwitchDefaults.colors(
                 checkedThumbColor = TextPrimary,
                 checkedTrackColor = ClotchBlue,
                 uncheckedThumbColor = TextSecondary,
                 uncheckedTrackColor = ElevatedSlate,
-                uncheckedBorderColor = HairlineBorder
+                uncheckedBorderColor = Color.Transparent
             )
         )
     }

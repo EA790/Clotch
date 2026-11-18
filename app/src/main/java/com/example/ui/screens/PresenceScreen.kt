@@ -1,6 +1,5 @@
 package com.example.ui.screens
 
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -14,16 +13,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.FilterChip
-import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -36,7 +28,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -48,15 +39,17 @@ import com.example.discord.DiscordConnectionState
 import com.example.discord.DiscordPresencePayload
 import com.example.discord.DiscordUserProfile
 import com.example.recording.RecorderState
+import com.example.ui.components.ClotchCardShape
+import com.example.ui.components.ClotchInputShape
 import com.example.ui.components.DiscordLogoBadge
 import com.example.ui.components.DiscordProfileCard
-import com.example.ui.theme.CarbonSurface
+import com.example.ui.components.TactileOptionPill
+import com.example.ui.components.TactilePillButton
+import com.example.ui.components.clotchTonalFieldColors
 import com.example.ui.theme.ClotchBlue
-import com.example.ui.theme.ClotchBlueMuted
 import com.example.ui.theme.CrimsonAccent
 import com.example.ui.theme.DiscordBlurple
 import com.example.ui.theme.ElevatedSlate
-import com.example.ui.theme.HairlineBorder
 import com.example.ui.theme.SignalEmerald
 import com.example.ui.theme.SlateCard
 import com.example.ui.theme.TextPrimary
@@ -100,7 +93,7 @@ fun PresenceScreen(
         modifier = modifier
             .fillMaxSize()
             .verticalScroll(scrollState)
-            .padding(horizontal = 20.dp, vertical = 12.dp),
+            .padding(horizontal = 20.dp, vertical = 16.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Column(
@@ -108,13 +101,12 @@ fun PresenceScreen(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(18.dp)
         ) {
-            Spacer(modifier = Modifier.height(6.dp))
+            Spacer(modifier = Modifier.height(4.dp))
 
             Text(
                 text = "Discord Presence",
                 style = MaterialTheme.typography.headlineMedium,
                 fontSize = 26.sp,
-                fontWeight = FontWeight.Bold,
                 color = TextPrimary,
                 textAlign = TextAlign.Center
             )
@@ -123,7 +115,7 @@ fun PresenceScreen(
             Surface(
                 modifier = Modifier.fillMaxWidth(),
                 color = SlateCard,
-                shape = RoundedCornerShape(18.dp)
+                shape = ClotchCardShape
             ) {
                 Row(
                     modifier = Modifier
@@ -169,7 +161,6 @@ fun PresenceScreen(
                             text = title,
                             style = MaterialTheme.typography.titleMedium,
                             fontSize = 18.sp,
-                            fontWeight = FontWeight.Bold,
                             color = titleColor
                         )
                         Text(
@@ -183,7 +174,7 @@ fun PresenceScreen(
                 }
             }
 
-            // Discord Signed-In Profile Card (username, photo, bio)
+            // Discord Signed-In Profile Card
             DiscordProfileCard(
                 profile = discordProfile,
                 isLoading = isFetchingProfile,
@@ -194,10 +185,9 @@ fun PresenceScreen(
             Spacer(modifier = Modifier.height(4.dp))
 
             Text(
-                text = "Current Activity (Preview)",
+                text = "Current Activity Preview",
                 style = MaterialTheme.typography.titleMedium,
                 fontSize = 17.sp,
-                fontWeight = FontWeight.Bold,
                 color = TextPrimary,
                 textAlign = TextAlign.Center
             )
@@ -206,7 +196,7 @@ fun PresenceScreen(
             Surface(
                 modifier = Modifier.fillMaxWidth(),
                 color = SlateCard,
-                shape = RoundedCornerShape(18.dp)
+                shape = ClotchCardShape
             ) {
                 Row(
                     modifier = Modifier
@@ -218,7 +208,7 @@ fun PresenceScreen(
                     Image(
                         painter = painterResource(id = R.drawable.img_clotch_mascot),
                         contentDescription = "Clotch Activity Icon",
-                        modifier = Modifier.size(68.dp),
+                        modifier = Modifier.size(66.dp),
                         contentScale = ContentScale.Fit
                     )
 
@@ -241,8 +231,7 @@ fun PresenceScreen(
                         Text(
                             text = previewPayload.formatStatusText(),
                             style = MaterialTheme.typography.titleLarge,
-                            fontSize = 20.sp,
-                            fontWeight = FontWeight.Bold,
+                            fontSize = 19.sp,
                             color = TextPrimary,
                             maxLines = 2,
                             overflow = TextOverflow.Ellipsis
@@ -262,55 +251,43 @@ fun PresenceScreen(
             Surface(
                 modifier = Modifier.fillMaxWidth(),
                 color = SlateCard,
-                shape = RoundedCornerShape(18.dp)
+                shape = ClotchCardShape
             ) {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                        .padding(18.dp),
+                    verticalArrangement = Arrangement.spacedBy(14.dp)
                 ) {
                     Text(
                         text = "App Detection & Status Title",
-                        style = MaterialTheme.typography.titleSmall,
+                        style = MaterialTheme.typography.titleMedium,
                         color = TextPrimary
                     )
 
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        if (!hasUsageStatsPermission) {
-                            Button(
-                                onClick = onRequestUsageAccess,
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .height(48.dp)
-                                    .testTag("grant_usage_access_button"),
-                                shape = RoundedCornerShape(12.dp),
-                                colors = ButtonDefaults.buttonColors(
-                                    containerColor = ClotchBlue,
-                                    contentColor = TextPrimary
-                                )
-                            ) {
-                                Text("Grant Usage Access")
-                            }
-                        } else {
-                            OutlinedButton(
-                                onClick = onScanAppsNow,
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .height(48.dp)
-                                    .testTag("scan_apps_button"),
-                                shape = RoundedCornerShape(12.dp),
-                                border = BorderStroke(1.dp, HairlineBorder),
-                                colors = ButtonDefaults.outlinedButtonColors(
-                                    containerColor = ElevatedSlate,
-                                    contentColor = TextPrimary
-                                )
-                            ) {
-                                Text("Scan Recent Apps & Lark")
-                            }
+                    if (!hasUsageStatsPermission) {
+                        TactilePillButton(
+                            onClick = onRequestUsageAccess,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(48.dp)
+                                .testTag("grant_usage_access_button"),
+                            containerColor = ClotchBlue,
+                            contentColor = TextPrimary
+                        ) {
+                            Text("Grant Usage Access")
+                        }
+                    } else {
+                        TactilePillButton(
+                            onClick = onScanAppsNow,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(48.dp)
+                                .testTag("scan_apps_button"),
+                            containerColor = ElevatedSlate,
+                            contentColor = TextPrimary
+                        ) {
+                            Text("Scan Recent Apps & Lark")
                         }
                     }
 
@@ -326,15 +303,8 @@ fun PresenceScreen(
                         modifier = Modifier
                             .fillMaxWidth()
                             .testTag("game_name_input"),
-                        shape = RoundedCornerShape(12.dp),
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = ClotchBlue,
-                            unfocusedBorderColor = HairlineBorder,
-                            focusedContainerColor = CarbonSurface,
-                            unfocusedContainerColor = CarbonSurface,
-                            focusedTextColor = TextPrimary,
-                            unfocusedTextColor = TextPrimary
-                        )
+                        shape = ClotchInputShape,
+                        colors = clotchTonalFieldColors(accentColor = ClotchBlue)
                     )
 
                     Row(
@@ -345,58 +315,40 @@ fun PresenceScreen(
                     ) {
                         PresencePresetGames.forEach { preset ->
                             val selected = localGameName.equals(preset, ignoreCase = true)
-                            FilterChip(
+                            TactileOptionPill(
+                                label = preset,
                                 selected = selected,
+                                accent = ClotchBlue,
                                 onClick = {
                                     localGameName = preset
                                     onGameNameChanged(preset)
-                                },
-                                label = { Text(preset, style = MaterialTheme.typography.bodySmall) },
-                                colors = FilterChipDefaults.filterChipColors(
-                                    containerColor = CarbonSurface,
-                                    labelColor = TextSecondary,
-                                    selectedContainerColor = ClotchBlueMuted,
-                                    selectedLabelColor = TextPrimary
-                                ),
-                                border = FilterChipDefaults.filterChipBorder(
-                                    enabled = true,
-                                    selected = selected,
-                                    borderColor = HairlineBorder,
-                                    selectedBorderColor = ClotchBlue
-                                )
+                                }
                             )
                         }
                     }
 
                     if (settings.discordToken.isNotBlank()) {
                         if (discordState is DiscordConnectionState.Connected) {
-                            OutlinedButton(
+                            TactilePillButton(
                                 onClick = onDisconnectRpc,
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .height(48.dp)
                                     .testTag("discord_connect_button"),
-                                shape = RoundedCornerShape(12.dp),
-                                border = BorderStroke(1.dp, HairlineBorder),
-                                colors = ButtonDefaults.outlinedButtonColors(
-                                    containerColor = ElevatedSlate,
-                                    contentColor = TextPrimary
-                                )
+                                containerColor = ElevatedSlate,
+                                contentColor = TextPrimary
                             ) {
                                 Text("Disconnect Kizzy RPC")
                             }
                         } else {
-                            Button(
+                            TactilePillButton(
                                 onClick = onConnectRpc,
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .height(48.dp)
                                     .testTag("discord_connect_button"),
-                                shape = RoundedCornerShape(12.dp),
-                                colors = ButtonDefaults.buttonColors(
-                                    containerColor = DiscordBlurple,
-                                    contentColor = TextPrimary
-                                )
+                                containerColor = DiscordBlurple,
+                                contentColor = TextPrimary
                             ) {
                                 Text("Connect Kizzy RPC")
                             }

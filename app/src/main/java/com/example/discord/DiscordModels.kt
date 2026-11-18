@@ -1,5 +1,8 @@
 package com.example.discord
 
+import androidx.compose.runtime.Immutable
+
+@Immutable
 sealed class DiscordConnectionState {
     data object Disconnected : DiscordConnectionState()
     data object Connecting : DiscordConnectionState()
@@ -13,6 +16,7 @@ sealed class DiscordConnectionState {
     ) : DiscordConnectionState()
 }
 
+@Immutable
 data class DiscordPresencePayload(
     val isRecording: Boolean = false,
     val isPaused: Boolean = false,

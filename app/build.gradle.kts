@@ -9,17 +9,25 @@ val versionPropsFile = layout.projectDirectory.file("version.properties")
 val versionPropsText = providers.fileContents(versionPropsFile).asText.orNull
 val baseVersionCode = versionPropsText
   ?.lineSequence()
+  ?.map { it.trim() }
   ?.firstOrNull { it.startsWith("VERSION_CODE=") }
   ?.substringAfter("=")
   ?.trim()
   ?.toIntOrNull() ?: 9
 
-val isDebugBuild = gradle.startParameter.taskNames.any {
-  it.contains("assembleDebug", ignoreCase = true) ||
-    it.contains("installDebug", ignoreCase = true) ||
-    it.equals("assemble", ignoreCase = true)
+val isVersionIncrementBuild = gradle.startParameter.taskNames.any { task ->
+  val lower = task.lowercase()
+  lower.contains("assembledebug") ||
+    lower.contains("installdebug") ||
+    lower.contains("packagedebug") ||
+    lower.contains("bundledebug") ||
+    lower.contains("assemblerelease") ||
+    lower.contains("packagerelease") ||
+    lower.contains("bundlerelease") ||
+    task == "assemble" ||
+    task == "build"
 }
-val computedVersionCode = if (isDebugBuild) baseVersionCode + 1 else baseVersionCode
+val computedVersionCode = if (isVersionIncrementBuild) baseVersionCode + 1 else baseVersionCode
 val versionPropsPath = versionPropsFile.asFile.absolutePath
 
 android {
@@ -136,11 +144,20 @@ abstract class SaveVersionCodeTask : DefaultTask() {
 val saveDebugVersionCode = tasks.register<SaveVersionCodeTask>("saveDebugVersionCode") {
   versionCodeToSave.set(computedVersionCode)
   targetFilePath.set(versionPropsPath)
-  enabled = isDebugBuild
+  enabled = isVersionIncrementBuild
 }
 
-if (isDebugBuild) {
-  tasks.matching { it.name == "assembleDebug" }.configureEach {
+if (isVersionIncrementBuild) {
+  tasks.matching {
+    it.name in setOf(
+      "assembleDebug",
+      "packageDebug",
+      "bundleDebug",
+      "assembleRelease",
+      "packageRelease",
+      "bundleRelease"
+    )
+  }.configureEach {
     finalizedBy(saveDebugVersionCode)
   }
 }

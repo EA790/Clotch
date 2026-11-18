@@ -199,14 +199,108 @@ object GameAudioPostProcessor {
 
         val session = FFmpegKit.executeWithArguments(args)
         val ok = ReturnCode.isSuccess(session.returnCode) && destFile.exists() && destFile.length() > 0L
-        if (!ok) {
-            CrashLogger.logFfmpegFailure(
-                operation = "MuxVideoWithGameAudio",
-                command = args.joinToString(" "),
-                returnCode = session.returnCode?.toString(),
-                logs = session.allLogsAsString ?: ""
+        if (ok) return@withContext true
+
+        CrashLogger.logFfmpegFailure(
+            operation = "MuxVideoWithGameAudio",
+            command = args.joinToString(" "),
+            returnCode = session.returnCode?.toString(),
+            logs = session.allLogsAsString ?: ""
+        )
+
+        // Native MediaMuxer fallback if FFmpeg failed
+        muxViaAndroidMediaMuxer(videoFile, gameAudioM4a, destFile)
+    }
+
+    private fun muxViaAndroidMediaMuxer(
+        videoFile: File,
+        audioFile: File?,
+        destFile: File
+    ): Boolean {
+        val videoExtractor = android.media.MediaExtractor()
+        val audioExtractor = android.media.MediaExtractor()
+        var muxer: android.media.MediaMuxer? = null
+        return try {
+            if (destFile.exists()) destFile.delete()
+            videoExtractor.setDataSource(videoFile.absolutePath)
+            var videoTrackSrc = -1
+            var videoFormat: android.media.MediaFormat? = null
+            for (i in 0 until videoExtractor.trackCount) {
+                val fmt = videoExtractor.getTrackFormat(i)
+                val mime = fmt.getString(android.media.MediaFormat.KEY_MIME).orEmpty()
+                if (mime.startsWith("video/")) {
+                    videoTrackSrc = i
+                    videoFormat = fmt
+                    break
+                }
+            }
+            if (videoTrackSrc < 0 || videoFormat == null) return false
+
+            var audioTrackSrc = -1
+            var audioFormat: android.media.MediaFormat? = null
+            if (audioFile != null && audioFile.exists() && audioFile.length() > 0L) {
+                runCatching {
+                    audioExtractor.setDataSource(audioFile.absolutePath)
+                    for (i in 0 until audioExtractor.trackCount) {
+                        val fmt = audioExtractor.getTrackFormat(i)
+                        val mime = fmt.getString(android.media.MediaFormat.KEY_MIME).orEmpty()
+                        if (mime.startsWith("audio/")) {
+                            audioTrackSrc = i
+                            audioFormat = fmt
+                            break
+                        }
+                    }
+                }
+            }
+
+            muxer = android.media.MediaMuxer(
+                destFile.absolutePath,
+                android.media.MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4
             )
+            val dstVideoTrack = muxer.addTrack(videoFormat)
+            val dstAudioTrack = if (audioTrackSrc >= 0 && audioFormat != null) {
+                runCatching { muxer.addTrack(audioFormat!!) }.getOrDefault(-1)
+            } else {
+                -1
+            }
+            muxer.start()
+
+            val buf = java.nio.ByteBuffer.allocate(512 * 1024)
+            val info = android.media.MediaCodec.BufferInfo()
+
+            videoExtractor.selectTrack(videoTrackSrc)
+            while (true) {
+                info.offset = 0
+                info.size = videoExtractor.readSampleData(buf, 0)
+                if (info.size < 0) break
+                info.presentationTimeUs = videoExtractor.sampleTime
+                info.flags = videoExtractor.sampleFlags
+                muxer.writeSampleData(dstVideoTrack, buf, info)
+                videoExtractor.advance()
+            }
+
+            if (dstAudioTrack >= 0 && audioTrackSrc >= 0) {
+                audioExtractor.selectTrack(audioTrackSrc)
+                while (true) {
+                    info.offset = 0
+                    info.size = audioExtractor.readSampleData(buf, 0)
+                    if (info.size < 0) break
+                    info.presentationTimeUs = audioExtractor.sampleTime
+                    info.flags = audioExtractor.sampleFlags
+                    muxer.writeSampleData(dstAudioTrack, buf, info)
+                    audioExtractor.advance()
+                }
+            }
+            muxer.stop()
+            destFile.exists() && destFile.length() > 0L
+        } catch (t: Throwable) {
+            CrashLogger.logError("GameAudioPostProcessor.MediaMuxer", "Native mux fallback failed", t)
+            runCatching { destFile.delete() }
+            false
+        } finally {
+            runCatching { muxer?.release() }
+            runCatching { videoExtractor.release() }
+            runCatching { audioExtractor.release() }
         }
-        ok
     }
 }
