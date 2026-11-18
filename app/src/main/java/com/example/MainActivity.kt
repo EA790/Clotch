@@ -14,6 +14,8 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import com.example.diagnostics.CrashLogger
+import com.example.discord.DiscordOAuthCallbackParser
+import com.example.discord.DiscordOAuthCallbackResult
 import com.example.recording.RecordingController
 import com.example.ui.ClotchApp
 import com.example.ui.theme.ClotchTheme
@@ -56,55 +58,24 @@ class MainActivity : ComponentActivity() {
                 return
             }
 
-            val data: Uri? = intent?.data
-            if (data != null && data.scheme == "clotch" && data.host == "discord-callback") {
-                val fragment = data.encodedFragment.orEmpty()
-                val queryParams = data.encodedQuery.orEmpty()
-
-                val error = extractParam(fragment, "error") ?: extractParam(queryParams, "error")
-                val errorDesc = extractParam(fragment, "error_description")
-                    ?: extractParam(queryParams, "error_description")
-                if (!error.isNullOrBlank()) {
-                    val friendly = errorDesc?.replace('+', ' ')?.takeIf { it.isNotBlank() } ?: error
+            when (val parsed = DiscordOAuthCallbackParser.parse(intent?.data)) {
+                is DiscordOAuthCallbackResult.NotOAuthCallback -> Unit
+                is DiscordOAuthCallbackResult.Token -> {
+                    oauthAccessToken = parsed.accessToken
+                    intent?.data = null
+                }
+                is DiscordOAuthCallbackResult.Error -> {
                     Toast.makeText(
                         applicationContext,
-                        "Discord OAuth2 cancelled or denied: $friendly",
+                        parsed.message,
                         Toast.LENGTH_LONG
                     ).show()
-                    intent.data = null
-                    return
+                    intent?.data = null
                 }
-
-                val token = extractParam(fragment, "access_token")
-                    ?: extractParam(queryParams, "access_token")
-                if (!token.isNullOrBlank()) {
-                    oauthAccessToken = token
-                } else {
-                    Toast.makeText(
-                        applicationContext,
-                        "Discord OAuth2 did not return an access token",
-                        Toast.LENGTH_SHORT
-                    ).show()
-                }
-                intent.data = null
             }
         } catch (t: Throwable) {
             CrashLogger.logError("MainActivity.handleIncomingIntent", "Failed processing deep-link intent", t)
             Toast.makeText(applicationContext, "Unable to process callback URI", Toast.LENGTH_SHORT).show()
         }
-    }
-
-    private fun extractParam(raw: String, key: String): String? {
-        if (raw.isBlank()) return null
-        return raw.split("&")
-            .mapNotNull { pair ->
-                val parts = pair.split("=", limit = 2)
-                if (parts.size == 2 && parts[0] == key) {
-                    runCatching { Uri.decode(parts[1]) }.getOrNull()
-                } else {
-                    null
-                }
-            }
-            .firstOrNull()
     }
 }

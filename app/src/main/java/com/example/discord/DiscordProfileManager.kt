@@ -38,6 +38,70 @@ data class DiscordUserProfile(
     val displayTitle: String get() = globalName.ifBlank { username }
 }
 
+sealed interface DiscordOAuthCallbackResult {
+    data object NotOAuthCallback : DiscordOAuthCallbackResult
+    data class Token(val accessToken: String) : DiscordOAuthCallbackResult
+    data class Error(val message: String, val isRedirectUriError: Boolean = false) : DiscordOAuthCallbackResult
+}
+
+object DiscordOAuthCallbackParser {
+
+    fun parse(uri: Uri?): DiscordOAuthCallbackResult {
+        if (uri == null) return DiscordOAuthCallbackResult.NotOAuthCallback
+        if (!uri.scheme.equals("clotch", ignoreCase = true) ||
+            !uri.host.equals("discord-callback", ignoreCase = true)
+        ) {
+            return DiscordOAuthCallbackResult.NotOAuthCallback
+        }
+
+        val rawString = uri.toString()
+        val fragment = uri.encodedFragment?.takeIf { it.isNotBlank() }
+            ?: rawString.substringAfter('#', missingDelimiterValue = "")
+        val cleanFragment = fragment.trimStart('#', '?', '/')
+
+        val queryParams = uri.encodedQuery?.takeIf { it.isNotBlank() }
+            ?: rawString.substringAfter('?', missingDelimiterValue = "").substringBefore('#')
+
+        val error = extractParam(cleanFragment, "error") ?: extractParam(queryParams, "error")
+        val errorDesc = extractParam(cleanFragment, "error_description")
+            ?: extractParam(queryParams, "error_description")
+        if (!error.isNullOrBlank()) {
+            val friendly = errorDesc?.replace('+', ' ')?.takeIf { it.isNotBlank() } ?: error
+            val isRedirectIssue = friendly.contains("redirect_uri", ignoreCase = true) ||
+                error.contains("redirect_uri", ignoreCase = true)
+            val message = if (isRedirectIssue) {
+                "Invalid OAuth2 redirect_uri: Add ${DiscordProfileManager.OAUTH_REDIRECT_URI} under OAuth2 Redirects in Discord Developer Portal."
+            } else {
+                "Discord OAuth2 cancelled or denied: $friendly"
+            }
+            return DiscordOAuthCallbackResult.Error(message, isRedirectUriError = isRedirectIssue)
+        }
+
+        val token = extractParam(cleanFragment, "access_token")
+            ?: extractParam(queryParams, "access_token")
+        return if (!token.isNullOrBlank()) {
+            DiscordOAuthCallbackResult.Token(DiscordProfileManager.sanitizeToken(token))
+        } else {
+            DiscordOAuthCallbackResult.Error("Discord OAuth2 did not return an access token")
+        }
+    }
+
+    private fun extractParam(raw: String, key: String): String? {
+        if (raw.isBlank()) return null
+        return raw.split("&")
+            .asSequence()
+            .mapNotNull { pair ->
+                val parts = pair.split("=", limit = 2)
+                if (parts.size == 2 && parts[0].equals(key, ignoreCase = true)) {
+                    runCatching { Uri.decode(parts[1]) }.getOrNull()?.takeIf { it.isNotBlank() }
+                } else {
+                    null
+                }
+            }
+            .firstOrNull()
+    }
+}
+
 class DiscordProfileManager(private val context: Context) {
 
     companion object {

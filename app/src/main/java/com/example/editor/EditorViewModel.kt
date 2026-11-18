@@ -4,6 +4,7 @@ import android.app.Application
 import android.graphics.Bitmap
 import android.media.MediaMetadataRetriever
 import android.net.Uri
+import android.os.Build
 import android.widget.Toast
 import androidx.annotation.OptIn
 import androidx.lifecycle.AndroidViewModel
@@ -63,6 +64,12 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.UUID
 
+data class EditorPreviewError(
+    val message: String,
+    val isWebmFallbackAvailable: Boolean = false,
+    val failingClipId: String? = null
+)
+
 class EditorViewModel(application: Application) : AndroidViewModel(application) {
 
     private val app = application as ClotchApplication
@@ -102,35 +109,17 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     private val _chromaPreviewBitmap = MutableStateFlow<Bitmap?>(null)
     val chromaPreviewBitmap: StateFlow<Bitmap?> = _chromaPreviewBitmap.asStateFlow()
 
-    @OptIn(UnstableApi::class)
-    val exoPlayer: ExoPlayer = run {
-        val renderersFactory = DefaultRenderersFactory(application)
-            .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER)
-            .setEnableDecoderFallback(true)
-        val extractorsFactory = DefaultExtractorsFactory()
-            .setConstantBitrateSeekingEnabled(true)
-        val mediaSourceFactory = DefaultMediaSourceFactory(application, extractorsFactory)
-        val loadControl = DefaultLoadControl.Builder()
-            .setBufferDurationsMs(
-                2_000,
-                10_000,
-                250,
-                500
-            )
-            .setPrioritizeTimeOverSizeThresholds(true)
-            .build()
-        ExoPlayer.Builder(application, renderersFactory)
-            .setMediaSourceFactory(mediaSourceFactory)
-            .setLoadControl(loadControl)
-            .setWakeMode(C.WAKE_MODE_LOCAL)
-            .build()
-            .apply {
-                setSeekParameters(SeekParameters.EXACT)
-            }
-    }
+    private val _previewError = MutableStateFlow<EditorPreviewError?>(null)
+    val previewError: StateFlow<EditorPreviewError?> = _previewError.asStateFlow()
+
+    private val _exoPlayerState = MutableStateFlow<ExoPlayer?>(null)
+    val exoPlayerState: StateFlow<ExoPlayer?> = _exoPlayerState.asStateFlow()
+
     private val audioPreviewPlayers = mutableMapOf<String, ExoPlayer>()
     private val audioPlayerSignatures = mutableMapOf<String, String>()
 
+    private var isPreviewActive: Boolean = false
+    private var currentPlayerUsesWebmExtractor: Boolean = false
     private var dragInitialSnapshot: EditorProject? = null
     private var lastLoadedSignature: String = ""
     private var lastAppliedVideoVol: Float = -1f
@@ -145,58 +134,136 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     private var exportJob: Job? = null
     private var chromaJob: Job? = null
 
-    init {
-        exoPlayer.addListener(object : Player.Listener {
-            override fun onIsPlayingChanged(isPlaying: Boolean) {
-                _isPlaying.value = isPlaying
-                if (isPlaying) {
-                    playerRecoveryCount = 0
-                    syncAudioPreviewToTimelineMs(_playheadMs.value)
-                    startPlaybackTicker()
-                } else {
-                    stopPlaybackTicker()
-                    if (_project.value.playheadMs != _playheadMs.value) {
-                        _project.value = _project.value.copy(playheadMs = _playheadMs.value)
+    @OptIn(UnstableApi::class)
+    private fun createConfiguredExoPlayer(webmMode: Boolean): ExoPlayer {
+        val renderersFactory = DefaultRenderersFactory(app)
+            .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER)
+            .setEnableDecoderFallback(true)
+        val extractorsFactory = if (webmMode) {
+            // Unindexed WEBM Matroska tracks stall or fail under constant-bitrate seeking
+            DefaultExtractorsFactory()
+        } else {
+            DefaultExtractorsFactory().setConstantBitrateSeekingEnabled(true)
+        }
+        val mediaSourceFactory = DefaultMediaSourceFactory(app, extractorsFactory)
+        val loadControl = DefaultLoadControl.Builder()
+            .setBufferDurationsMs(2_000, 10_000, 250, 500)
+            .setPrioritizeTimeOverSizeThresholds(true)
+            .build()
+        return ExoPlayer.Builder(app, renderersFactory)
+            .setMediaSourceFactory(mediaSourceFactory)
+            .setLoadControl(loadControl)
+            .setWakeMode(C.WAKE_MODE_LOCAL)
+            .build()
+            .apply {
+                setSeekParameters(
+                    if (webmMode || fallbackClosestSeekActive) {
+                        SeekParameters.CLOSEST_SYNC
+                    } else {
+                        SeekParameters.EXACT
                     }
-                    audioPreviewPlayers.values.forEach { if (it.isPlaying) it.pause() }
-                }
+                )
+                addListener(createPlayerListener(this))
             }
+    }
 
-            override fun onPlaybackStateChanged(playbackState: Int) {
-                if (playbackState == Player.STATE_READY) {
-                    playerRecoveryCount = 0
-                } else if (playbackState == Player.STATE_ENDED) {
-                    stopPlaybackTicker()
-                    _isPlaying.value = false
-                    runCatching { exoPlayer.pause() }
-                    audioPreviewPlayers.values.forEach { runCatching { if (it.isPlaying) it.pause() } }
-                    _playheadMs.value = 0L
-                    _project.value = _project.value.copy(playheadMs = 0L)
-                    syncExoPlayerToTimelineMs(0L)
-                    syncAudioPreviewToTimelineMs(0L)
+    private fun createPlayerListener(owner: ExoPlayer): Player.Listener = object : Player.Listener {
+        override fun onIsPlayingChanged(isPlaying: Boolean) {
+            if (_exoPlayerState.value !== owner) return
+            _isPlaying.value = isPlaying
+            if (isPlaying) {
+                playerRecoveryCount = 0
+                _previewError.value = null
+                syncAudioPreviewToTimelineMs(_playheadMs.value)
+                startPlaybackTicker()
+            } else {
+                stopPlaybackTicker()
+                if (_project.value.playheadMs != _playheadMs.value) {
+                    _project.value = _project.value.copy(playheadMs = _playheadMs.value)
                 }
+                audioPreviewPlayers.values.forEach { runCatching { if (it.isPlaying) it.pause() } }
             }
+        }
 
-            @OptIn(UnstableApi::class)
-            override fun onPlayerError(error: PlaybackException) {
-                CrashLogger.logError("Media3Preview", "ExoPlayer playback/scrub error", error)
-                if (playerRecoveryCount < 2 && _project.value.videoClips.isNotEmpty()) {
-                    playerRecoveryCount++
-                    if (!fallbackClosestSeekActive) {
-                        fallbackClosestSeekActive = true
-                        exoPlayer.setSeekParameters(SeekParameters.CLOSEST_SYNC)
-                    }
-                    val resumeAt = _playheadMs.value.coerceAtLeast(0L)
-                    runCatching {
-                        exoPlayer.stop()
-                        lastLoadedSignature = ""
-                        syncMedia3PlaylistIfNeeded(_project.value.copy(playheadMs = resumeAt))
-                    }
-                } else {
-                    showToast("Preview error logged to ${CrashLogger.getLogDisplayPath()}")
-                }
+        override fun onPlaybackStateChanged(playbackState: Int) {
+            if (_exoPlayerState.value !== owner) return
+            if (playbackState == Player.STATE_READY) {
+                playerRecoveryCount = 0
+                _previewError.value = null
+            } else if (playbackState == Player.STATE_ENDED) {
+                stopPlaybackTicker()
+                _isPlaying.value = false
+                runCatching { owner.pause() }
+                audioPreviewPlayers.values.forEach { runCatching { if (it.isPlaying) it.pause() } }
+                _playheadMs.value = 0L
+                _project.value = _project.value.copy(playheadMs = 0L)
+                syncExoPlayerToTimelineMs(0L)
+                syncAudioPreviewToTimelineMs(0L)
             }
-        })
+        }
+
+        @OptIn(UnstableApi::class)
+        override fun onPlayerError(error: PlaybackException) {
+            if (_exoPlayerState.value !== owner) return
+            CrashLogger.logError("Media3Preview", "ExoPlayer playback/scrub error", error)
+            val curProject = _project.value
+            val activeClip = curProject.findVideoClipAt(_playheadMs.value)?.clip
+                ?: curProject.videoClips.firstOrNull()
+            val webmClip = activeClip?.let { isWebmClip(it) } == true
+
+            if (playerRecoveryCount < 1 && curProject.videoClips.isNotEmpty()) {
+                playerRecoveryCount++
+                fallbackClosestSeekActive = true
+                owner.setSeekParameters(SeekParameters.CLOSEST_SYNC)
+                val resumeAt = _playheadMs.value.coerceAtLeast(0L)
+                runCatching {
+                    owner.stop()
+                    lastLoadedSignature = ""
+                    syncMedia3PlaylistIfNeeded(curProject.copy(playheadMs = resumeAt))
+                }
+            } else {
+                stopPlaybackTicker()
+                _isPlaying.value = false
+                runCatching {
+                    owner.stop()
+                    owner.clearVideoSurface()
+                }
+                audioPreviewPlayers.values.forEach { runCatching { if (it.isPlaying) it.pause() } }
+                _previewError.value = EditorPreviewError(
+                    message = if (webmClip) {
+                        "WEBM preview cannot be decoded smoothly (${error.errorCodeName}). Convert to MP4 to continue editing safely."
+                    } else {
+                        "Preview could not decode this video (${error.errorCodeName}). Try retrying or converting."
+                    },
+                    isWebmFallbackAvailable = webmClip && activeClip != null,
+                    failingClipId = activeClip?.id
+                )
+            }
+        }
+    }
+
+    private fun ensureExoPlayer(webmMode: Boolean): ExoPlayer {
+        val existing = _exoPlayerState.value
+        if (existing != null && currentPlayerUsesWebmExtractor == webmMode) {
+            return existing
+        }
+        if (existing != null) {
+            releaseExoPlayerInstance(existing)
+        }
+        currentPlayerUsesWebmExtractor = webmMode
+        return createConfiguredExoPlayer(webmMode).also { created ->
+            _exoPlayerState.value = created
+        }
+    }
+
+    private fun releaseExoPlayerInstance(player: ExoPlayer?) {
+        player ?: return
+        runCatching {
+            if (player.isPlaying) player.pause()
+            player.stop()
+            player.clearVideoSurface()
+            player.release()
+        }
     }
 
     private fun updateProject(newState: EditorProject, recordUndo: Boolean = true) {
@@ -214,9 +281,13 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
         _project.value = syncedState
         _canUndo.value = history.canUndo
         _canRedo.value = history.canRedo
-        syncMedia3PlaylistIfNeeded(syncedState)
-        syncAudioPreviewIfNeeded(syncedState)
-        applyLivePreviewPlaybackSettings()
+        if (isPreviewActive) {
+            syncMedia3PlaylistIfNeeded(syncedState)
+            syncAudioPreviewIfNeeded(syncedState)
+            applyLivePreviewPlaybackSettings()
+        } else {
+            lastLoadedSignature = ""
+        }
     }
 
     fun importVideoUri(uri: Uri, fallbackName: String = "Imported Clip") {
@@ -327,15 +398,23 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
 
     fun togglePlayPause() {
         if (_project.value.videoClips.isEmpty()) return
+        if (_previewError.value != null) {
+            retryPreview()
+            return
+        }
+        val player = _exoPlayerState.value ?: run {
+            preparePreviewIfNeeded()
+            _exoPlayerState.value
+        } ?: return
         val currentPlayhead = _playheadMs.value
-        if (exoPlayer.isPlaying) {
-            exoPlayer.pause()
-            audioPreviewPlayers.values.forEach { it.pause() }
+        if (player.isPlaying) {
+            player.pause()
+            audioPreviewPlayers.values.forEach { runCatching { it.pause() } }
             _project.value = _project.value.copy(playheadMs = currentPlayhead)
         } else {
             syncExoPlayerToTimelineMs(currentPlayhead)
             syncAudioPreviewToTimelineMs(currentPlayhead)
-            exoPlayer.play()
+            player.play()
             playActiveAudioTracksAt(currentPlayhead)
         }
     }
@@ -343,35 +422,40 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     fun pausePlayback() {
         stopPlaybackTicker()
         _project.value = _project.value.copy(playheadMs = _playheadMs.value)
-        if (exoPlayer.isPlaying) exoPlayer.pause()
+        _exoPlayerState.value?.let { player ->
+            if (player.isPlaying) player.pause()
+        }
         audioPreviewPlayers.values.forEach { if (it.isPlaying) it.pause() }
     }
 
     fun stopPreviewForExit() {
+        isPreviewActive = false
         stopPlaybackTicker()
+        scrubSeekJob?.cancel()
         _isPlaying.value = false
         _project.value = _project.value.copy(playheadMs = _playheadMs.value)
+        lastLoadedSignature = ""
         lastAppliedVideoVol = -1f
         lastAppliedSpeed = -1f
-        runCatching {
-            if (exoPlayer.isPlaying) {
-                exoPlayer.pause()
-            }
-            exoPlayer.stop()
-            exoPlayer.clearVideoSurface()
-        }
+
+        val existingPlayer = _exoPlayerState.value
+        _exoPlayerState.value = null
+        releaseExoPlayerInstance(existingPlayer)
+
         audioPreviewPlayers.values.forEach { player ->
             runCatching {
-                if (player.isPlaying) {
-                    player.pause()
-                }
+                if (player.isPlaying) player.pause()
                 player.stop()
+                player.release()
             }
         }
+        audioPreviewPlayers.clear()
+        audioPlayerSignatures.clear()
     }
 
     @OptIn(UnstableApi::class)
     fun preparePreviewIfNeeded() {
+        isPreviewActive = true
         val current = _project.value
         if (current.videoClips.isEmpty()) return
         val resumePlayhead = _playheadMs.value.coerceIn(0L, current.totalTimelineDurationMs.coerceAtLeast(0L))
@@ -379,33 +463,68 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
         lastAppliedVideoVol = -1f
         lastAppliedSpeed = -1f
 
-        if (exoPlayer.playbackState == Player.STATE_IDLE || exoPlayer.mediaItemCount == 0) {
+        val existing = _exoPlayerState.value
+        if (existing == null || existing.playbackState == Player.STATE_IDLE || existing.mediaItemCount == 0) {
             lastLoadedSignature = ""
             syncMedia3PlaylistIfNeeded(current.copy(playheadMs = resumePlayhead))
         } else {
             syncExoPlayerToTimelineMs(resumePlayhead)
         }
 
-        current.audioClips.forEach { audio ->
-            val player = audioPreviewPlayers[audio.id]
-            if (player != null && player.playbackState == Player.STATE_IDLE) {
-                if (player.mediaItemCount == 0) {
-                    val builder = MediaItem.Builder().setUri(audio.sourceUri)
-                    if (shouldClipAudio(audio)) {
-                        builder.setClippingConfiguration(
-                            MediaItem.ClippingConfiguration.Builder()
-                                .setStartPositionMs(audio.trimStartMs)
-                                .setEndPositionMs(audio.trimEndMs)
-                                .build()
-                        )
-                    }
-                    player.setMediaItem(builder.build())
-                }
-                player.prepare()
-            }
-        }
+        syncAudioPreviewIfNeeded(current)
         syncAudioPreviewToTimelineMs(resumePlayhead)
         applyLivePreviewPlaybackSettings()
+    }
+
+    fun retryPreview() {
+        _previewError.value = null
+        playerRecoveryCount = 0
+        fallbackClosestSeekActive = false
+        lastLoadedSignature = ""
+        releaseExoPlayerInstance(_exoPlayerState.value)
+        _exoPlayerState.value = null
+        preparePreviewIfNeeded()
+    }
+
+    fun convertWebmClipToMp4(clipId: String?) {
+        val cur = _project.value
+        val targetClip = if (clipId != null) {
+            cur.videoClips.firstOrNull { it.id == clipId }
+        } else {
+            cur.findVideoClipAt(_playheadMs.value)?.clip ?: cur.videoClips.firstOrNull()
+        } ?: return
+
+        viewModelScope.launch {
+            _isBusy.value = true
+            try {
+                val convertedUri = FFmpegEditorEngine.transcodeWebmToMp4(
+                    context = app,
+                    uri = targetClip.sourceUri,
+                    displayName = targetClip.displayName
+                )
+                if (convertedUri == null) {
+                    showToast("Unable to convert WEBM. Check Documents/Clotch-Log")
+                    return@launch
+                }
+                val latest = _project.value
+                val mp4Name = targetClip.displayName.substringBeforeLast('.') + ".mp4"
+                val updatedClips = latest.videoClips.map { clip ->
+                    if (clip.id == targetClip.id) {
+                        clip.copy(sourceUri = convertedUri, displayName = mp4Name)
+                    } else {
+                        clip
+                    }
+                }
+                _previewError.value = null
+                playerRecoveryCount = 0
+                fallbackClosestSeekActive = false
+                lastLoadedSignature = ""
+                updateProject(latest.copy(videoClips = updatedClips), recordUndo = true)
+                showToast("Converted $mp4Name for smooth editing")
+            } finally {
+                _isBusy.value = false
+            }
+        }
     }
 
     fun seekTo(timelineMs: Long) {
@@ -420,7 +539,7 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
         if (elapsedSinceLast >= 45L && scrubSeekJob?.isActive != true) {
             lastDispatchedScrubElapsedMs = now
             syncExoPlayerToTimelineMs(clamped)
-            if (exoPlayer.isPlaying) {
+            if (_exoPlayerState.value?.isPlaying == true) {
                 syncAudioPreviewToTimelineMs(clamped)
             }
         } else if (scrubSeekJob?.isActive != true) {
@@ -430,7 +549,7 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
                     val target = pendingScrubTimelineMs
                     lastDispatchedScrubElapsedMs = android.os.SystemClock.elapsedRealtime()
                     syncExoPlayerToTimelineMs(target)
-                    if (exoPlayer.isPlaying) {
+                    if (_exoPlayerState.value?.isPlaying == true) {
                         syncAudioPreviewToTimelineMs(target)
                     }
                     if (target == pendingScrubTimelineMs) break
@@ -1111,13 +1230,41 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
             val frame = withContext(Dispatchers.IO) {
                 val retriever = MediaMetadataRetriever()
                 try {
-                    retriever.setDataSource(app, clip.sourceUri)
-                    retriever.getScaledFrameAtTime(
-                        sampleSourceMs * 1000L,
-                        MediaMetadataRetriever.OPTION_CLOSEST_SYNC,
-                        320,
-                        180
-                    )
+                    var pfdOk = false
+                    if (clip.sourceUri.scheme.equals("content", ignoreCase = true)) {
+                        app.contentResolver.openFileDescriptor(clip.sourceUri, "r")?.use { pfd ->
+                            retriever.setDataSource(pfd.fileDescriptor)
+                            pfdOk = true
+                        }
+                    }
+                    if (!pfdOk) {
+                        retriever.setDataSource(app, clip.sourceUri)
+                    }
+                    val raw = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+                        retriever.getScaledFrameAtTime(
+                            sampleSourceMs * 1000L,
+                            MediaMetadataRetriever.OPTION_CLOSEST_SYNC,
+                            320,
+                            180
+                        ) ?: retriever.getFrameAtTime(
+                            sampleSourceMs * 1000L,
+                            MediaMetadataRetriever.OPTION_CLOSEST_SYNC
+                        )
+                    } else {
+                        retriever.getFrameAtTime(
+                            sampleSourceMs * 1000L,
+                            MediaMetadataRetriever.OPTION_CLOSEST_SYNC
+                        )
+                    }
+                    if (raw != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+                        raw.config == Bitmap.Config.HARDWARE
+                    ) {
+                        runCatching { raw.copy(Bitmap.Config.ARGB_8888, false) }
+                            .also { raw.recycle() }
+                            .getOrNull()
+                    } else {
+                        raw
+                    }
                 } catch (_: Throwable) {
                     null
                 } finally {
@@ -1375,24 +1522,45 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
         return audio.trimStartMs > 0L || audio.trimEndMs < audio.sourceDurationMs - 50L
     }
 
+    private fun isWebmClip(clip: TimelineVideoClip): Boolean {
+        if (clip.displayName.endsWith(".webm", ignoreCase = true)) return true
+        if (clip.sourceUri.toString().contains(".webm", ignoreCase = true)) return true
+        val mime = runCatching { app.contentResolver.getType(clip.sourceUri) }.getOrNull()
+        return mime?.contains("webm", ignoreCase = true) == true
+    }
+
     @OptIn(UnstableApi::class)
     private fun syncMedia3PlaylistIfNeeded(project: EditorProject) {
         val signature = project.videoClips.joinToString("|") {
             "${it.id}:${it.sourceUri}:${it.trimStartMs}:${it.trimEndMs}:${it.isFreezeFrame}"
         }
-        if (signature == lastLoadedSignature) return
-        lastLoadedSignature = signature
-        fallbackClosestSeekActive = false
-        exoPlayer.setSeekParameters(SeekParameters.EXACT)
-
-        if (project.videoClips.isEmpty()) {
-            exoPlayer.clearMediaItems()
+        val existingPlayer = _exoPlayerState.value
+        val hasWebm = project.videoClips.any { isWebmClip(it) }
+        if (signature == lastLoadedSignature && existingPlayer != null &&
+            currentPlayerUsesWebmExtractor == hasWebm
+        ) {
             return
         }
+        lastLoadedSignature = signature
+        _previewError.value = null
+        fallbackClosestSeekActive = hasWebm
+
+        if (project.videoClips.isEmpty()) {
+            existingPlayer?.clearMediaItems()
+            return
+        }
+        val player = ensureExoPlayer(webmMode = hasWebm)
+        player.setSeekParameters(
+            if (hasWebm || fallbackClosestSeekActive) SeekParameters.CLOSEST_SYNC else SeekParameters.EXACT
+        )
+
         val items = project.videoClips.map { clip ->
             val builder = MediaItem.Builder()
                 .setMediaId(clip.id)
                 .setUri(clip.sourceUri)
+            if (isWebmClip(clip)) {
+                builder.setMimeType("video/webm")
+            }
             if (shouldClipVideo(clip)) {
                 builder.setClippingConfiguration(
                     MediaItem.ClippingConfiguration.Builder()
@@ -1403,16 +1571,17 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
             }
             builder.build()
         }
-        val wasPlaying = exoPlayer.isPlaying
-        exoPlayer.setMediaItems(items, false)
-        exoPlayer.prepare()
+        val wasPlaying = player.isPlaying
+        player.setMediaItems(items, false)
+        player.prepare()
         syncExoPlayerToTimelineMs(project.playheadMs)
         applyLivePreviewPlaybackSettings()
-        if (wasPlaying) exoPlayer.play()
+        if (wasPlaying) player.play()
     }
 
     @OptIn(UnstableApi::class)
     private fun syncAudioPreviewIfNeeded(project: EditorProject) {
+        if (!isPreviewActive) return
         val activeIds = project.audioClips.map { it.id }.toSet()
         val staleIds = audioPreviewPlayers.keys.filter { it !in activeIds }
         staleIds.forEach { staleId ->
@@ -1444,6 +1613,7 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     private fun syncExoPlayerToTimelineMs(timelineMs: Long) {
+        val player = _exoPlayerState.value ?: return
         val window = _project.value.findVideoClipAt(timelineMs) ?: return
         val localOffset = (timelineMs - window.timelineStartMs).coerceIn(0L, window.clip.effectiveDurationMs)
         val clipped = shouldClipVideo(window.clip)
@@ -1458,9 +1628,9 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
             (window.clip.sourceDurationMs - 16L).coerceAtLeast(0L)
         }
         val sourcePos = rawPos.coerceIn(0L, safeMaxPos)
-        if (window.index in 0 until exoPlayer.mediaItemCount) {
+        if (window.index in 0 until player.mediaItemCount) {
             runCatching {
-                exoPlayer.seekTo(window.index, sourcePos)
+                player.seekTo(window.index, sourcePos)
             }.onFailure { t ->
                 CrashLogger.logError("Media3Preview.Seek", "seekTo($sourcePos) failed", t)
             }
@@ -1500,36 +1670,39 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     private fun applyLivePreviewPlaybackSettings(playheadMsOverride: Long = _playheadMs.value) {
+        val player = _exoPlayerState.value
         val cur = _project.value
         val activeWindow = cur.findVideoClipAt(playheadMsOverride)
         val activeClip = activeWindow?.clip
         val vidVol = activeClip?.effectiveVolume?.coerceIn(0f, 1f) ?: 1f
         val speed = activeClip?.speed?.coerceIn(0.5f, 4.0f) ?: 1.0f
 
-        if (vidVol != lastAppliedVideoVol) {
-            exoPlayer.volume = vidVol
-            lastAppliedVideoVol = vidVol
-        }
-        if (speed != lastAppliedSpeed) {
-            exoPlayer.playbackParameters = PlaybackParameters(speed, 1.0f)
-            lastAppliedSpeed = speed
+        if (player != null) {
+            if (vidVol != lastAppliedVideoVol) {
+                player.volume = vidVol
+                lastAppliedVideoVol = vidVol
+            }
+            if (speed != lastAppliedSpeed) {
+                player.playbackParameters = PlaybackParameters(speed, 1.0f)
+                lastAppliedSpeed = speed
+            }
         }
 
-        val isPlayingNow = exoPlayer.isPlaying
+        val isPlayingNow = player?.isPlaying == true
         cur.audioClips.forEach { audio ->
-            val player = audioPreviewPlayers[audio.id] ?: return@forEach
+            val audioPlayer = audioPreviewPlayers[audio.id] ?: return@forEach
             val inWindow = playheadMsOverride in audio.timelineStartMs until audio.timelineEndMs
             val targetVol = if (inWindow) audio.effectiveVolume.coerceIn(0f, 1f) else 0f
-            if (player.volume != targetVol) {
-                player.volume = targetVol
+            if (audioPlayer.volume != targetVol) {
+                audioPlayer.volume = targetVol
             }
             if (isPlayingNow) {
-                if (inWindow && !player.isPlaying) {
+                if (inWindow && !audioPlayer.isPlaying) {
                     val offset = (playheadMsOverride - audio.timelineStartMs).coerceIn(0L, audio.effectiveDurationMs)
-                    player.seekTo(offset)
-                    player.play()
-                } else if (!inWindow && player.isPlaying) {
-                    player.pause()
+                    audioPlayer.seekTo(offset)
+                    audioPlayer.play()
+                } else if (!inWindow && audioPlayer.isPlaying) {
+                    audioPlayer.pause()
                 }
             }
         }
@@ -1538,13 +1711,15 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     private fun startPlaybackTicker() {
         playbackTickerJob?.cancel()
         playbackTickerJob = viewModelScope.launch {
-            while (isActive && exoPlayer.isPlaying) {
+            while (isActive) {
+                val player = _exoPlayerState.value ?: break
+                if (!player.isPlaying) break
                 val cur = _project.value
-                val idx = exoPlayer.currentMediaItemIndex
+                val idx = player.currentMediaItemIndex
                 val windows = cur.videoWindows()
                 if (idx in windows.indices) {
                     val clip = windows[idx].clip
-                    val rawPos = exoPlayer.currentPosition.coerceAtLeast(0L)
+                    val rawPos = player.currentPosition.coerceAtLeast(0L)
                     val offsetInClip = if (shouldClipVideo(clip)) {
                         rawPos
                     } else {
@@ -1580,11 +1755,9 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
         voiceoverRecorder.cancelRecording()
         captionEngine.destroy()
         chromaProcessor.closeAllDetectors()
-        runCatching {
-            exoPlayer.stop()
-            exoPlayer.clearVideoSurface()
-            exoPlayer.release()
-        }
+        val existingPlayer = _exoPlayerState.value
+        _exoPlayerState.value = null
+        releaseExoPlayerInstance(existingPlayer)
         audioPreviewPlayers.values.forEach {
             runCatching {
                 it.stop()
@@ -1593,6 +1766,6 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
         }
         audioPreviewPlayers.clear()
         audioPlayerSignatures.clear()
-        thumbnailCache.clear()
+        thumbnailCache.release()
     }
 }

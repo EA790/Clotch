@@ -1,11 +1,15 @@
 package com.example
 
+import android.content.ComponentCallbacks2
 import android.net.Uri
 import com.example.data.AudioCaptureSource
 import com.example.data.ClotchSettings
 import com.example.data.CompanionTrackMatcher
 import com.example.data.RecordingMode
 import com.example.data.VideoFormat
+import com.example.diagnostics.MemoryPressureListener
+import com.example.diagnostics.MemoryPressureManager
+import com.example.editor.engine.EditorThumbnailCache
 import com.example.editor.engine.FFmpegFilterBuilder
 import com.example.editor.model.AudioClipKind
 import com.example.editor.model.ClipKeyframe
@@ -293,5 +297,25 @@ class EditorModelsTest {
         assertEquals(com.example.data.AudioTrackMode.NORMAL_AUDIO, settingsNormal.audioTrackMode)
         assertFalse(settingsNormal.isSeparateAudioActive)
         assertTrue(settingsNormal.needsMicPermission)
+    }
+
+    @Test
+    fun memoryPressureManager_notifiesAndUnregistersThumbnailCacheCleanly() {
+        var receivedLevel = -1
+        val listener = MemoryPressureListener { level -> receivedLevel = level }
+        MemoryPressureManager.registerListener(listener)
+
+        val thumbCache = EditorThumbnailCache()
+        try {
+            MemoryPressureManager.dispatchTrimMemory(ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW)
+            assertEquals(ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW, receivedLevel)
+
+            MemoryPressureManager.unregisterListener(listener)
+            receivedLevel = -1
+            MemoryPressureManager.dispatchLowMemory()
+            assertEquals(-1, receivedLevel)
+        } finally {
+            thumbCache.release()
+        }
     }
 }

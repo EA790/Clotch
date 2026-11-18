@@ -160,6 +160,65 @@ object FFmpegEditorEngine {
             )
         }
 
+    /**
+     * Converts a problematic WEBM file into an indexed H.264/MPEG4 MP4 in the app cache
+     * strictly on Dispatchers.IO without mutating the original source file.
+     */
+    suspend fun transcodeWebmToMp4(
+        context: Context,
+        uri: Uri,
+        displayName: String = "clip.webm"
+    ): Uri? = withContext(Dispatchers.IO) {
+        val stagedInput = stageUriToLocalFile(context, uri) ?: return@withContext null
+        val outDir = File(context.cacheDir, "editor_webm_converted").apply { if (!exists()) mkdirs() }
+        val base = displayName.substringBeforeLast('.').replace(Regex("[^A-Za-z0-9._-]"), "_")
+        val outFile = File(outDir, "${base}_${System.currentTimeMillis()}.mp4")
+        val hasAudio = runCatching { probeHasAudioStream(stagedInput.absolutePath) }.getOrDefault(false)
+
+        val codecs = listOf("libopenh264", "mpeg4")
+        for (codec in codecs) {
+            runCatching { outFile.delete() }
+            val args = buildList {
+                add("-y")
+                add("-i")
+                add(stagedInput.absolutePath)
+                add("-c:v")
+                add(codec)
+                add("-b:v")
+                add("8M")
+                add("-pix_fmt")
+                add("yuv420p")
+                if (hasAudio) {
+                    add("-c:a")
+                    add("aac")
+                    add("-b:a")
+                    add("192k")
+                } else {
+                    add("-an")
+                }
+                add("-movflags")
+                add("+faststart")
+                add(outFile.absolutePath)
+            }.toTypedArray()
+
+            val session = runCatching { executeFfmpeg(args) }.getOrNull()
+            if (session != null && ReturnCode.isSuccess(session.returnCode) &&
+                outFile.exists() && outFile.length() > 0L
+            ) {
+                return@withContext Uri.fromFile(outFile)
+            } else if (session != null) {
+                CrashLogger.logFfmpegFailure(
+                    operation = "TranscodeWebmToMp4_$codec",
+                    command = args.joinToString(" "),
+                    returnCode = session.returnCode?.toString(),
+                    logs = session.allLogsAsString ?: ""
+                )
+            }
+        }
+        runCatching { outFile.delete() }
+        null
+    }
+
     suspend fun extractAudioToM4a(
         context: Context,
         clip: TimelineVideoClip
@@ -321,11 +380,41 @@ object FFmpegEditorEngine {
         var h = clip.height
 
         try {
-            retriever.setDataSource(context, clip.sourceUri)
-            val bmp = retriever.getFrameAtTime(
-                sourceTimeMs.coerceAtLeast(0L) * 1000L,
-                MediaMetadataRetriever.OPTION_CLOSEST_SYNC
-            ) ?: return@withContext null
+            var pfdOpened = false
+            if (clip.sourceUri.scheme.equals("content", ignoreCase = true)) {
+                context.contentResolver.openFileDescriptor(clip.sourceUri, "r")?.use { pfd ->
+                    retriever.setDataSource(pfd.fileDescriptor)
+                    pfdOpened = true
+                }
+            }
+            if (!pfdOpened) {
+                retriever.setDataSource(context, clip.sourceUri)
+            }
+            val rawBmp = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+                retriever.getScaledFrameAtTime(
+                    sourceTimeMs.coerceAtLeast(0L) * 1000L,
+                    MediaMetadataRetriever.OPTION_CLOSEST_SYNC,
+                    1920,
+                    1080
+                ) ?: retriever.getFrameAtTime(
+                    sourceTimeMs.coerceAtLeast(0L) * 1000L,
+                    MediaMetadataRetriever.OPTION_CLOSEST_SYNC
+                )
+            } else {
+                retriever.getFrameAtTime(
+                    sourceTimeMs.coerceAtLeast(0L) * 1000L,
+                    MediaMetadataRetriever.OPTION_CLOSEST_SYNC
+                )
+            } ?: return@withContext null
+            val bmp = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+                rawBmp.config == Bitmap.Config.HARDWARE
+            ) {
+                runCatching { rawBmp.copy(Bitmap.Config.ARGB_8888, false) }
+                    .also { rawBmp.recycle() }
+                    .getOrNull() ?: return@withContext null
+            } else {
+                rawBmp
+            }
             w = bmp.width
             h = bmp.height
             pngFile.outputStream().use { out ->
@@ -861,7 +950,7 @@ object FFmpegEditorEngine {
 
     private fun pruneStaleTempCaches(context: Context) {
         val cutoffMs = System.currentTimeMillis() - 24L * 60L * 60L * 1000L
-        val dirs = listOf("editor_staging", "editor_captions", "editor_overlays", "editor_exports")
+        val dirs = listOf("editor_staging", "editor_captions", "editor_overlays", "editor_exports", "editor_webm_converted")
         dirs.forEach { name ->
             val dir = File(context.cacheDir, name)
             if (dir.exists()) {

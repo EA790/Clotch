@@ -2,6 +2,7 @@ package com.example
 
 import android.app.Application
 import com.example.diagnostics.CrashLogger
+import com.example.diagnostics.MemoryPressureManager
 import com.example.recording.RecordingController
 
 class ClotchApplication : Application() {
@@ -12,6 +13,16 @@ class ClotchApplication : Application() {
         super.onCreate()
         CrashLogger.install(this)
         recordingController = RecordingController(this)
+    }
+
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        MemoryPressureManager.dispatchTrimMemory(level)
+    }
+
+    override fun onLowMemory() {
+        super.onLowMemory()
+        MemoryPressureManager.dispatchLowMemory()
     }
 
     override fun onTerminate() {

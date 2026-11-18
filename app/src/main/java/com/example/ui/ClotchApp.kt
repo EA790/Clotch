@@ -740,7 +740,15 @@ fun ClotchApp(
                 val url = viewModel.buildOAuthUrlAndSaveClientId(clientId)
                 if (url != null) {
                     runCatching {
-                        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+                        val customTabExtras = android.os.Bundle().apply {
+                            putBinder("android.support.customtabs.extra.SESSION", null)
+                            putInt("android.support.customtabs.extra.TOOLBAR_COLOR", 0xFF0A0E17.toInt())
+                        }
+                        val oauthIntent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
+                            putExtras(customTabExtras)
+                            addFlags(Intent.FLAG_ACTIVITY_NO_HISTORY)
+                        }
+                        context.startActivity(oauthIntent)
                     }.onFailure {
                         viewModel.showToast("Unable to open browser for Discord OAuth2")
                     }

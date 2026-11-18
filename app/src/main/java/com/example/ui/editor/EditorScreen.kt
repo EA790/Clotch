@@ -60,6 +60,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -121,6 +122,8 @@ fun EditorScreen(
     val context = LocalContext.current
     val haptic = LocalHapticFeedback.current
     val project by editorViewModel.project.collectAsStateWithLifecycle()
+    val exoPlayer by editorViewModel.exoPlayerState.collectAsStateWithLifecycle()
+    val previewError by editorViewModel.previewError.collectAsStateWithLifecycle()
     val canUndo by editorViewModel.canUndo.collectAsStateWithLifecycle()
     val canRedo by editorViewModel.canRedo.collectAsStateWithLifecycle()
     val isPlaying by editorViewModel.isPlaying.collectAsStateWithLifecycle()
@@ -129,6 +132,21 @@ fun EditorScreen(
     val voiceoverState by editorViewModel.voiceoverState.collectAsStateWithLifecycle()
     val autoCaptionState by editorViewModel.autoCaptionState.collectAsStateWithLifecycle()
     val chromaPreviewBitmap by editorViewModel.chromaPreviewBitmap.collectAsStateWithLifecycle()
+
+    val hasSelection by remember {
+        derivedStateOf {
+            project.selectedVideoClipId != null ||
+                project.selectedAudioClipId != null ||
+                project.selectedOverlayId != null ||
+                project.selectedStickerId != null
+        }
+    }
+    val hasVideoClips by remember {
+        derivedStateOf { project.videoClips.isNotEmpty() }
+    }
+    val selectedVideoIdx by remember {
+        derivedStateOf { project.videoClips.indexOfFirst { it.id == project.selectedVideoClipId } }
+    }
 
     var activeToolTab by remember { mutableStateOf(EditorToolTab.AUDIO) }
     var showSavedClipsDialog by remember { mutableStateOf(false) }
@@ -265,7 +283,7 @@ fun EditorScreen(
                         editorViewModel.resetExportState()
                         showExportDialog = true
                     },
-                    enabled = project.videoClips.isNotEmpty() && !isBusy,
+                    enabled = hasVideoClips && !isBusy,
                     modifier = Modifier
                         .height(48.dp)
                         .testTag("editor_export_button"),
@@ -287,12 +305,15 @@ fun EditorScreen(
             EditorPreviewStage(
                 project = project,
                 playheadMsFlow = editorViewModel.playheadMs,
-                exoPlayer = editorViewModel.exoPlayer,
+                exoPlayer = exoPlayer,
+                previewError = previewError,
                 isBusy = isBusy,
                 voiceoverState = voiceoverState,
                 isEditorActive = isEditorActive,
                 onPreparePreview = { editorViewModel.preparePreviewIfNeeded() },
                 onStopPreview = { editorViewModel.stopPreviewForExit() },
+                onRetryPreview = { editorViewModel.retryPreview() },
+                onConvertWebmToMp4 = { clipId -> editorViewModel.convertWebmClipToMp4(clipId) },
                 onImportGallery = {
                     videoPickerLauncher.launch(
                         PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly)
@@ -328,25 +349,25 @@ fun EditorScreen(
                     ) {
                         TactileIconButton(
                             onClick = { editorViewModel.stepFrame(-1) },
-                            enabled = project.videoClips.isNotEmpty(),
+                            enabled = hasVideoClips,
                             hapticType = HapticFeedbackType.TextHandleMove,
                             modifier = Modifier.testTag("editor_step_back_button")
                         ) {
                             Icon(
                                 imageVector = Icons.Filled.ChevronLeft,
                                 contentDescription = "Previous frame",
-                                tint = if (project.videoClips.isNotEmpty()) TextSecondary else TextMuted
+                                tint = if (hasVideoClips) TextSecondary else TextMuted
                             )
                         }
 
                         TactileSurface(
                             onClick = { editorViewModel.togglePlayPause() },
-                            enabled = project.videoClips.isNotEmpty(),
+                            enabled = hasVideoClips,
                             modifier = Modifier
                                 .size(48.dp)
                                 .testTag("editor_play_pause_button"),
                             shape = CircleShape,
-                            color = if (project.videoClips.isNotEmpty()) ClotchBlue else ElevatedSlate,
+                            color = if (hasVideoClips) ClotchBlue else ElevatedSlate,
                             pressedScale = 0.92f,
                             hapticType = HapticFeedbackType.LongPress
                         ) {
@@ -361,14 +382,14 @@ fun EditorScreen(
 
                         TactileIconButton(
                             onClick = { editorViewModel.stepFrame(1) },
-                            enabled = project.videoClips.isNotEmpty(),
+                            enabled = hasVideoClips,
                             hapticType = HapticFeedbackType.TextHandleMove,
                             modifier = Modifier.testTag("editor_step_forward_button")
                         ) {
                             Icon(
                                 imageVector = Icons.Filled.ChevronRight,
                                 contentDescription = "Next frame",
-                                tint = if (project.videoClips.isNotEmpty()) TextSecondary else TextMuted
+                                tint = if (hasVideoClips) TextSecondary else TextMuted
                             )
                         }
 
@@ -379,24 +400,20 @@ fun EditorScreen(
                         )
                     }
 
-                    val hasSelection = project.selectedVideoClipId != null ||
-                        project.selectedAudioClipId != null ||
-                        project.selectedOverlayId != null ||
-                        project.selectedStickerId != null
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(2.dp)
                     ) {
                         TactileIconButton(
                             onClick = { editorViewModel.splitAtPlayhead() },
-                            enabled = project.videoClips.isNotEmpty(),
+                            enabled = hasVideoClips,
                             hapticType = HapticFeedbackType.LongPress,
                             modifier = Modifier.testTag("editor_split_button")
                         ) {
                             Icon(
                                 imageVector = Icons.Filled.ContentCut,
                                 contentDescription = "Split clip at playhead",
-                                tint = if (project.videoClips.isNotEmpty()) TextPrimary else TextMuted
+                                tint = if (hasVideoClips) TextPrimary else TextMuted
                             )
                         }
                         TactileIconButton(
@@ -598,7 +615,6 @@ fun EditorScreen(
             }
 
             // Active Tool Panel
-            val selectedVideoIdx = project.videoClips.indexOfFirst { it.id == project.selectedVideoClipId }
             when (activeToolTab) {
                 EditorToolTab.AUDIO -> {
                     SelectedClipInspectorPanel(

@@ -1,5 +1,6 @@
 package com.example.ui.screens
 
+import android.content.ComponentCallbacks2
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
@@ -9,6 +10,8 @@ import android.net.Uri
 import android.os.Build
 import android.text.format.Formatter
 import android.util.LruCache
+import com.example.diagnostics.MemoryPressureListener
+import com.example.diagnostics.MemoryPressureManager
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -611,14 +614,33 @@ private object ClipsThumbnailCache {
     @OptIn(ExperimentalCoroutinesApi::class)
     val decodeDispatcher = Dispatchers.IO.limitedParallelism(1)
 
-    private val cache = object : LruCache<String, Bitmap>(6 * 1024) {
+    private val cache = object : LruCache<String, Bitmap>(4 * 1024) {
         override fun sizeOf(key: String, value: Bitmap): Int = (value.allocationByteCount / 1024).coerceAtLeast(1)
+    }
+
+    @Suppress("DEPRECATION")
+    private val pressureListener = MemoryPressureListener { level ->
+        if (level >= ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL ||
+            level >= ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN
+        ) {
+            cache.evictAll()
+        } else if (level >= ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW) {
+            cache.trimToSize(cache.size() / 2)
+        }
+    }
+
+    init {
+        MemoryPressureManager.registerListener(pressureListener)
     }
 
     fun get(uri: Uri, sizeBytes: Long): Bitmap? = cache.get("${uri}_${sizeBytes}")?.takeIf { !it.isRecycled }
 
     fun put(uri: Uri, sizeBytes: Long, bitmap: Bitmap) {
         cache.put("${uri}_${sizeBytes}", bitmap)
+    }
+
+    fun trimAll() {
+        cache.evictAll()
     }
 }
 
@@ -649,6 +671,9 @@ private suspend fun extractFirstVideoFrame(context: Context, uri: Uri, sizeBytes
             } else {
                 retriever.getFrameAtTime(0L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
             }
+        } catch (_: OutOfMemoryError) {
+            ClipsThumbnailCache.trimAll()
+            null
         } catch (_: Throwable) {
             null
         } finally {
@@ -665,28 +690,44 @@ private suspend fun extractFirstVideoFrame(context: Context, uri: Uri, sizeBytes
 private fun compactThumbBitmap(raw: Bitmap?, maxW: Int, maxH: Int): Bitmap? {
     raw ?: return null
     if (raw.isRecycled) return null
+    val softwareBitmap = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+        raw.config == Bitmap.Config.HARDWARE
+    ) {
+        val copied = runCatching { raw.copy(Bitmap.Config.ARGB_8888, false) }.getOrNull()
+        raw.recycle()
+        copied ?: return null
+    } else {
+        raw
+    }
+    if (softwareBitmap.width <= maxW &&
+        softwareBitmap.height <= maxH &&
+        softwareBitmap.config == Bitmap.Config.RGB_565
+    ) {
+        return softwareBitmap
+    }
     val scale = minOf(
-        maxW.toFloat() / raw.width.coerceAtLeast(1),
-        maxH.toFloat() / raw.height.coerceAtLeast(1),
+        maxW.toFloat() / softwareBitmap.width.coerceAtLeast(1),
+        maxH.toFloat() / softwareBitmap.height.coerceAtLeast(1),
         1f
     )
-    val outW = (raw.width * scale).toInt().coerceAtLeast(32)
-    val outH = (raw.height * scale).toInt().coerceAtLeast(32)
-    if (raw.width <= maxW && raw.height <= maxH && raw.config == Bitmap.Config.RGB_565) {
-        return raw
-    }
+    val outW = (softwareBitmap.width * scale).toInt().coerceAtLeast(32)
+    val outH = (softwareBitmap.height * scale).toInt().coerceAtLeast(32)
     return try {
         val compact = Bitmap.createBitmap(outW, outH, Bitmap.Config.RGB_565)
         Canvas(compact).drawBitmap(
-            raw,
-            android.graphics.Rect(0, 0, raw.width, raw.height),
+            softwareBitmap,
+            android.graphics.Rect(0, 0, softwareBitmap.width, softwareBitmap.height),
             android.graphics.Rect(0, 0, outW, outH),
             null
         )
-        raw.recycle()
+        softwareBitmap.recycle()
         compact
+    } catch (_: OutOfMemoryError) {
+        softwareBitmap.recycle()
+        ClipsThumbnailCache.trimAll()
+        null
     } catch (_: Throwable) {
-        raw.recycle()
+        softwareBitmap.recycle()
         null
     }
 }

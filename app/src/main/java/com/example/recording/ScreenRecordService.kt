@@ -271,23 +271,36 @@ class ScreenRecordService : Service() {
         }
 
         if (wantsGameAudio && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            val gamePcm = File(cacheDir, "game_${fileTimestamp}.pcm")
-            val capturer = InternalAudioCapturer(gamePcm)
-            if (capturer.start(projection)) {
-                internalAudioCapturer = capturer
-            } else {
-                controller.showToast("Game audio capture unavailable; continuing video + mic")
+            runCatching {
+                val gamePcm = File(cacheDir, "game_${fileTimestamp}.pcm")
+                val capturer = InternalAudioCapturer(gamePcm)
+                if (capturer.start(projection)) {
+                    internalAudioCapturer = capturer
+                } else {
+                    controller.showToast("Game audio capture unavailable; continuing video + mic")
+                }
+            }.onFailure { t ->
+                CrashLogger.logError("ScreenRecordService.GameAudio", "Failed starting internal game audio", t)
             }
         }
 
         if (usePcmMicCapture) {
-            val micPcm = File(cacheDir, "mic_${fileTimestamp}.pcm")
-            val micCapturer = MicPcmCapturer(micPcm)
-            if (micCapturer.start()) {
-                micPcmCapturer = micCapturer
-            } else {
-                controller.showToast("Microphone unavailable right now; continuing screen recording")
+            runCatching {
+                val micPcm = File(cacheDir, "mic_${fileTimestamp}.pcm")
+                val micCapturer = MicPcmCapturer(micPcm)
+                if (micCapturer.start()) {
+                    micPcmCapturer = micCapturer
+                } else {
+                    controller.showToast("Microphone unavailable right now; continuing screen recording")
+                }
+            }.onFailure { t ->
+                CrashLogger.logError("ScreenRecordService.MicAudio", "Failed starting mic PCM capturer", t)
             }
+        }
+
+        if (saveCompanionTracks && internalAudioCapturer == null && micPcmCapturer == null) {
+            saveCompanionTracks = false
+            controller.showToast("Audio separation unavailable right now; falling back to normal recording")
         }
 
         try {
@@ -606,9 +619,6 @@ class ScreenRecordService : Service() {
             false
         }
 
-        val gamePcmFile = gameCapturer?.stop()
-        val micPcmFile = micCapturer?.stop()
-
         releaseRecorderOnly()
         runCatching { virtualDisplay?.release() }
         virtualDisplay = null
@@ -619,26 +629,16 @@ class ScreenRecordService : Service() {
         val tempMp4 = tempMp4ForPostProcess
         tempMp4ForPostProcess = null
 
-        val needsPostProcess = (activeVideoFormat == VideoFormat.MKV ||
-            gamePcmFile != null ||
-            micPcmFile != null ||
-            tempMp4 != null)
-
-        if (needsPostProcess && stopSucceeded && tempMp4 != null && tempMp4.exists() && savedName != null) {
-            val toastMsg = when {
-                saveCompanionTracks && gamePcmFile != null && micPcmFile != null ->
-                    "Saving Video + Game & Mic separate tracks..."
-                saveCompanionTracks ->
-                    "Saving separate audio track + video..."
-                gamePcmFile != null && micPcmFile != null ->
-                    "Mixing Game Audio + Mic into clip..."
-                activeVideoFormat == VideoFormat.MKV ->
-                    "Remuxing recording to MKV..."
-                else -> "Finalizing recording..."
-            }
-            controller.showToast(toastMsg)
-
+        if (stopSucceeded && tempMp4 != null && tempMp4.exists() && savedName != null) {
+            controller.showToast(
+                if (saveCompanionTracks) "Saving Video + Separate audio tracks..." else "Finalizing recording..."
+            )
             serviceScope.launch {
+                val (gamePcmFile, micPcmFile) = withContext(Dispatchers.IO) {
+                    val g = runCatching { gameCapturer?.stop() }.getOrNull()
+                    val m = runCatching { micCapturer?.stop() }.getOrNull()
+                    g to m
+                }
                 val (videoOk, companionMicName) = postProcessAndPublishRecording(
                     tempMp4 = tempMp4,
                     gamePcmFile = gamePcmFile,
@@ -655,17 +655,21 @@ class ScreenRecordService : Service() {
                 )
             }
         } else {
-            runCatching { tempMp4?.delete() }
-            runCatching { gamePcmFile?.delete() }
-            runCatching { micPcmFile?.delete() }
-            closeVideoOutputHandles(deletePending = !stopSucceeded)
-            cleanupAndStopForeground()
-            controller.onServiceRecordingStopped(
-                savedFileName = if (stopSucceeded) savedName else null,
-                audioFileName = null
-            )
-            if (fromSystemCallback && !stopSucceeded) {
-                controller.showToast("Screen capture ended by system")
+            serviceScope.launch {
+                withContext(Dispatchers.IO) {
+                    runCatching { gameCapturer?.releaseAndDelete() }
+                    runCatching { micCapturer?.releaseAndDelete() }
+                    runCatching { tempMp4?.delete() }
+                }
+                closeVideoOutputHandles(deletePending = !stopSucceeded)
+                cleanupAndStopForeground()
+                controller.onServiceRecordingStopped(
+                    savedFileName = if (stopSucceeded) savedName else null,
+                    audioFileName = null
+                )
+                if (fromSystemCallback && !stopSucceeded) {
+                    controller.showToast("Screen capture ended by system")
+                }
             }
         }
     }
@@ -679,21 +683,29 @@ class ScreenRecordService : Service() {
         targetFormat: VideoFormat,
         publishSeparateTracks: Boolean
     ): Pair<Boolean, String?> = withContext(Dispatchers.IO) {
-        val tempGameM4a = if (gamePcmFile != null && gamePcmFile.exists() && gamePcmFile.length() > 0L) {
-            File(cacheDir, "game_${fileTimestamp}.m4a").takeIf { outM4a ->
-                GameAudioPostProcessor.encodePcmToM4a(gamePcmFile, outM4a)
+        val tempGameM4a = runCatching {
+            if (gamePcmFile != null && gamePcmFile.exists() && gamePcmFile.length() > 0L) {
+                File(cacheDir, "game_${fileTimestamp}.m4a").takeIf { outM4a ->
+                    GameAudioPostProcessor.encodePcmToM4a(gamePcmFile, outM4a)
+                }
+            } else {
+                null
             }
-        } else {
-            null
-        }
+        }.onFailure { t ->
+            CrashLogger.logError("ScreenRecordService.GameM4a", "Game M4A encode failed", t)
+        }.getOrNull()
 
-        val tempMicM4a = if (micPcmFile != null && micPcmFile.exists() && micPcmFile.length() > 0L) {
-            File(cacheDir, "mic_${fileTimestamp}.m4a").takeIf { outM4a ->
-                GameAudioPostProcessor.encodePcmToM4a(micPcmFile, outM4a)
+        val tempMicM4a = runCatching {
+            if (micPcmFile != null && micPcmFile.exists() && micPcmFile.length() > 0L) {
+                File(cacheDir, "mic_${fileTimestamp}.m4a").takeIf { outM4a ->
+                    GameAudioPostProcessor.encodePcmToM4a(micPcmFile, outM4a)
+                }
+            } else {
+                null
             }
-        } else {
-            null
-        }
+        }.onFailure { t ->
+            CrashLogger.logError("ScreenRecordService.MicM4a", "Mic M4A encode failed", t)
+        }.getOrNull()
 
         var tempMixedM4a: File? = null
         var publishedMicName: String? = null
@@ -701,35 +713,50 @@ class ScreenRecordService : Service() {
         var videoPublished = false
 
         try {
-            if (publishSeparateTracks) {
-                // Save separate Game Audio and Microphone tracks to Music/Clotch
-                if (tempGameM4a != null) {
+            var effectiveSeparateMode = publishSeparateTracks
+            if (effectiveSeparateMode) {
+                val gameSaved = if (tempGameM4a != null) {
                     saveFileToMusicMediaStore(tempGameM4a, "game_${fileTimestamp}.m4a", "audio/mp4")
+                } else {
+                    false
                 }
-                if (tempMicM4a != null) {
+                val micSaved = if (tempMicM4a != null) {
                     val micDisplayName = "mic_${fileTimestamp}.m4a"
-                    if (saveFileToMusicMediaStore(tempMicM4a, micDisplayName, "audio/mp4")) {
-                        publishedMicName = micDisplayName
+                    saveFileToMusicMediaStore(tempMicM4a, micDisplayName, "audio/mp4").also { ok ->
+                        if (ok) publishedMicName = micDisplayName
                     }
+                } else {
+                    false
+                }
+                if ((gamePcmFile != null || micPcmFile != null) && !gameSaved && !micSaved) {
+                    // Graceful fallback to Normal Audio if Separate Audio export failed
+                    effectiveSeparateMode = false
+                    controller.showToast("Separate audio failed; falling back to normal audio")
                 }
             }
 
             // Determine primary audio stream to embed inside the video file itself
-            val primaryVideoAudio: File? = if (publishSeparateTracks) {
-                tempGameM4a ?: tempMicM4a
-            } else {
-                when {
-                    gamePcmFile != null && micPcmFile != null -> {
-                        File(cacheDir, "mixed_${fileTimestamp}.m4a").takeIf { outMixed ->
-                            GameAudioPostProcessor.mixPcmTracksToM4a(gamePcmFile, micPcmFile, outMixed)
-                        }.also { tempMixedM4a = it } ?: tempGameM4a ?: tempMicM4a
+            val primaryVideoAudio: File? = runCatching {
+                if (effectiveSeparateMode) {
+                    tempGameM4a ?: tempMicM4a
+                } else {
+                    when {
+                        gamePcmFile != null && micPcmFile != null -> {
+                            File(cacheDir, "mixed_${fileTimestamp}.m4a").takeIf { outMixed ->
+                                GameAudioPostProcessor.mixPcmTracksToM4a(gamePcmFile, micPcmFile, outMixed)
+                            }.also { tempMixedM4a = it } ?: tempGameM4a ?: tempMicM4a
+                        }
+                        else -> tempGameM4a ?: tempMicM4a
                     }
-                    else -> tempGameM4a ?: tempMicM4a
                 }
-            }
+            }.onFailure { t ->
+                CrashLogger.logError("ScreenRecordService.PrimaryAudio", "Normal audio mix fallback failed", t)
+            }.getOrNull()
 
             val muxOk = if (primaryVideoAudio != null) {
-                GameAudioPostProcessor.muxVideoWithAudio(tempMp4, primaryVideoAudio, stagedFinal)
+                runCatching {
+                    GameAudioPostProcessor.muxVideoWithAudio(tempMp4, primaryVideoAudio, stagedFinal)
+                }.getOrDefault(false)
             } else if (targetFormat == VideoFormat.MKV) {
                 val cmd = "-y -i \"${tempMp4.absolutePath}\" -c copy \"${stagedFinal.absolutePath}\""
                 val session = runCatching { FFmpegKit.execute(cmd) }.getOrNull()
@@ -739,7 +766,12 @@ class ScreenRecordService : Service() {
                 false
             }
 
-            videoPublished = if (muxOk && stagedFinal.exists() && stagedFinal.length() > 0L) {
+            // Never publish a corrupted muxed file; verify video track before replacing untouched tempMp4
+            val stagedVerified = muxOk && stagedFinal.exists() && stagedFinal.length() > 0L && (
+                targetFormat == VideoFormat.MKV || GameAudioPostProcessor.verifyMp4HasVideoTrack(stagedFinal)
+                )
+
+            videoPublished = if (stagedVerified) {
                 saveFileToMoviesMediaStore(stagedFinal, finalFileName, targetFormat.mimeType)
             } else {
                 val fallbackMp4Name = finalFileName.replace(".mkv", ".mp4", ignoreCase = true)
@@ -762,7 +794,7 @@ class ScreenRecordService : Service() {
         } catch (t: Throwable) {
             CrashLogger.logError(
                 "ScreenRecordService.PostProcess",
-                "Audio post-processing failed; attempting raw video preservation",
+                "Audio post-processing failed; preserving raw video untouched",
                 t
             )
             val fallbackMp4Name = finalFileName.replace(".mkv", ".mp4", ignoreCase = true)
@@ -771,8 +803,8 @@ class ScreenRecordService : Service() {
             } else {
                 false
             }
-            if (!videoPublished) {
-                controller.showToast("Audio mix failed; raw video preserved if available")
+            if (videoPublished) {
+                controller.showToast("Audio separation failed; saved raw video safely")
             }
             videoPublished to publishedMicName
         } finally {

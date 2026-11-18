@@ -9,6 +9,7 @@ import android.graphics.Paint
 import android.graphics.RectF
 import android.graphics.Shader
 import android.media.MediaMetadataRetriever
+import android.os.Build
 import com.arthenica.ffmpegkit.FFmpegKit
 import com.arthenica.ffmpegkit.ReturnCode
 import com.example.diagnostics.CrashLogger
@@ -112,10 +113,32 @@ class HybridChromaKeyProcessor {
                     (clip.trimStartMs + sourceOffsetMs).coerceIn(clip.trimStartMs, clip.trimEndMs)
                 }
 
-                val sampled = retriever.getFrameAtTime(
-                    rawTimeMs * 1000L,
-                    MediaMetadataRetriever.OPTION_CLOSEST_SYNC
-                )
+                val sampledRaw = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+                    retriever.getScaledFrameAtTime(
+                        rawTimeMs * 1000L,
+                        MediaMetadataRetriever.OPTION_CLOSEST_SYNC,
+                        analysisW,
+                        analysisH
+                    ) ?: retriever.getFrameAtTime(
+                        rawTimeMs * 1000L,
+                        MediaMetadataRetriever.OPTION_CLOSEST_SYNC
+                    )
+                } else {
+                    retriever.getFrameAtTime(
+                        rawTimeMs * 1000L,
+                        MediaMetadataRetriever.OPTION_CLOSEST_SYNC
+                    )
+                }
+                val sampled = if (sampledRaw != null &&
+                    Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+                    sampledRaw.config == Bitmap.Config.HARDWARE
+                ) {
+                    runCatching { sampledRaw.copy(Bitmap.Config.ARGB_8888, false) }
+                        .also { sampledRaw.recycle() }
+                        .getOrNull()
+                } else {
+                    sampledRaw
+                }
                 val frame = if (sampled != null) {
                     Bitmap.createScaledBitmap(sampled, analysisW, analysisH, true)
                 } else {
@@ -123,8 +146,10 @@ class HybridChromaKeyProcessor {
                 }
                 val mask = computeAlphaMaskBitmap(frame, clip.chromaKey.mode)
                 val frameFile = File(matteDir, String.format(Locale.US, "mask_%05d.png", i))
-                frameFile.outputStream().use { out ->
-                    mask.compress(Bitmap.CompressFormat.PNG, 90, out)
+                withContext(Dispatchers.IO) {
+                    frameFile.outputStream().use { out ->
+                        mask.compress(Bitmap.CompressFormat.PNG, 90, out)
+                    }
                 }
                 if (sampled != null && sampled !== frame) sampled.recycle()
                 frame.recycle()
@@ -142,7 +167,9 @@ class HybridChromaKeyProcessor {
                 "-q:v", "4",
                 outMatteVideo.absolutePath
             )
-            val session = FFmpegKit.executeWithArguments(args)
+            val session = withContext(Dispatchers.IO) {
+                FFmpegKit.executeWithArguments(args)
+            }
             if (ReturnCode.isSuccess(session.returnCode) && outMatteVideo.exists() && outMatteVideo.length() > 0L) {
                 outMatteVideo
             } else {

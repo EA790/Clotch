@@ -3,9 +3,12 @@ package com.example
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
+import android.net.Uri
 import androidx.test.core.app.ApplicationProvider
 import com.example.discord.DiscordConnectionState
+import com.example.discord.DiscordOAuthCallbackParser
 import com.example.discord.DiscordPresencePayload
+import com.example.discord.DiscordProfileManager
 import com.example.discord.DiscordRpcClient
 import com.example.recording.RecordingController
 import kotlinx.coroutines.delay
@@ -133,5 +136,28 @@ class DiscordAndLifecycleTest {
             controller.release()
             controller.release()
         }
+    }
+
+    @Test
+    fun discordOAuthParser_extractsFragmentTokenAndBuildsImplicitGrantUrl() {
+        val url = DiscordProfileManager.buildOAuthAuthorizeUrl("123456789012345678")
+        assertTrue(url.contains("response_type=token"))
+        assertTrue(url.contains("redirect_uri=clotch%3A%2F%2Fdiscord-callback"))
+        assertTrue(url.contains("scope=identify"))
+
+        val successUri = Uri.parse(
+            "clotch://discord-callback#access_token=abc_oauth_token_999&token_type=Bearer&expires_in=604800"
+        )
+        val parsed = DiscordOAuthCallbackParser.parse(successUri)
+        assertEquals("abc_oauth_token_999", parsed.accessToken)
+        assertNull(parsed.errorMessage)
+
+        val errUri = Uri.parse(
+            "clotch://discord-callback?error=invalid_request&error_description=Invalid%20OAuth2%20redirect_uri"
+        )
+        val errParsed = DiscordOAuthCallbackParser.parse(errUri)
+        assertNull(errParsed.accessToken)
+        assertNotNull(errParsed.errorMessage)
+        assertTrue(errParsed.errorMessage!!.contains("clotch://discord-callback"))
     }
 }

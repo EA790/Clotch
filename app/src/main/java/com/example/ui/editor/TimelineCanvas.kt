@@ -14,7 +14,9 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -25,6 +27,9 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -55,6 +60,7 @@ import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -111,10 +117,26 @@ import com.example.ui.theme.WarningAmber
 import com.example.ui.theme.WarningAmberMuted
 import kotlinx.coroutines.flow.StateFlow
 import java.util.Locale
-import kotlin.math.ceil
-import kotlin.math.floor
 import kotlin.math.roundToInt
 import kotlin.math.roundToLong
+
+private sealed interface FilmstripSlotItem {
+    val stableKey: String
+    val widthDp: Dp
+
+    data class ThumbSlot(
+        override val stableKey: String,
+        val sourceUri: android.net.Uri,
+        val sampleTimeMs: Long,
+        val bucketKey: Long,
+        override val widthDp: Dp
+    ) : FilmstripSlotItem
+
+    data class TransitionSpacer(
+        override val stableKey: String,
+        override val widthDp: Dp
+    ) : FilmstripSlotItem
+}
 
 @Composable
 fun TimelineCanvas(
@@ -165,6 +187,74 @@ fun TimelineCanvas(
     val visibleStartPx = visibleWindowPx.first
     val visibleEndPx = visibleWindowPx.second
 
+    val filmstripLazyState = rememberLazyListState()
+    val filmstripItems by remember(project.videoClips, dpPerMs) {
+        derivedStateOf {
+            buildList {
+                project.videoClips.forEachIndexed { index, clip ->
+                    val clipWidthDp = (clip.effectiveDurationMs * dpPerMs).dp.coerceAtLeast(64.dp)
+                    val thumbCount = ((clipWidthDp.value / 68f).toInt()).coerceIn(1, 120)
+                    val slotWidthDp = clipWidthDp / thumbCount.toFloat()
+                    for (slot in 0 until thumbCount) {
+                        val fraction = (slot + 0.5f) / thumbCount.toFloat()
+                        val sampleTimeMs = clip.trimStartMs + (clip.effectiveDurationMs * fraction).toLong()
+                        val bucketKey = sampleTimeMs / 500L
+                        add(
+                            FilmstripSlotItem.ThumbSlot(
+                                stableKey = "thumb_${clip.id}_$slot",
+                                sourceUri = clip.sourceUri,
+                                sampleTimeMs = sampleTimeMs,
+                                bucketKey = bucketKey,
+                                widthDp = slotWidthDp
+                            )
+                        )
+                    }
+                    if (index < project.videoClips.lastIndex) {
+                        add(
+                            FilmstripSlotItem.TransitionSpacer(
+                                stableKey = "gap_${clip.id}",
+                                widthDp = 32.dp
+                            )
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    val cumulativeItemOffsetsPx = remember(filmstripItems, density, trackPadPx) {
+        val offsets = IntArray(filmstripItems.size + 1)
+        var acc = trackPadPx
+        filmstripItems.forEachIndexed { idx, item ->
+            offsets[idx] = acc.roundToInt()
+            acc += with(density) { item.widthDp.toPx() }
+        }
+        offsets[filmstripItems.size] = acc.roundToInt()
+        offsets
+    }
+
+    LaunchedEffect(scrollState, cumulativeItemOffsetsPx, filmstripItems.size) {
+        if (filmstripItems.isEmpty()) return@LaunchedEffect
+        snapshotFlow { scrollState.value }.collect { scrollPx ->
+            val maxIdx = filmstripItems.lastIndex
+            if (maxIdx < 0) return@collect
+            var low = 0
+            var high = maxIdx
+            var foundIdx = 0
+            while (low <= high) {
+                val mid = (low + high) ushr 1
+                if (cumulativeItemOffsetsPx[mid] <= scrollPx) {
+                    foundIdx = mid
+                    low = mid + 1
+                } else {
+                    high = mid - 1
+                }
+            }
+            val offsetInsideItem = (scrollPx - cumulativeItemOffsetsPx[foundIdx]).coerceAtLeast(0)
+            filmstripLazyState.scrollToItem(index = foundIdx, scrollOffset = offsetInsideItem)
+        }
+    }
+
     TimelineAutoScrollEffect(
         playheadMsFlow = playheadMsFlow,
         isPlaying = isPlaying,
@@ -179,122 +269,147 @@ fun TimelineCanvas(
         color = CarbonSurface,
         shape = ClotchCardShape
     ) {
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .horizontalScroll(scrollState)
-                .padding(vertical = 10.dp)
-        ) {
-            Box(modifier = Modifier.width(contentWidthDp)) {
-                Column(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    // Single-Canvas Time Ruler (Zero child composables during scrolling)
-                    TimelineRuler(
-                        totalMs = totalMs,
-                        zoomLevel = project.zoomLevel,
-                        pxPerMs = pxPerMs,
-                        trackPadDp = trackPadDp,
-                        visibleStartPx = visibleStartPx,
-                        visibleEndPx = visibleEndPx,
-                        maxSeekMs = latestTotalDuration,
-                        onSeekTo = onSeekTo,
-                        onScrubFinished = onScrubFinished,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(24.dp)
-                    )
+        BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+            val viewportWidthDp = maxWidth
 
-                    // Video Filmstrip sits flush right under ruler ticks so the Playhead slices directly over frames
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = trackPadDp)
-                    ) {
-                        if (project.videoClips.isEmpty()) {
-                            Box(
-                                modifier = Modifier
-                                    .width(240.dp)
-                                    .height(74.dp)
-                                    .clip(RoundedCornerShape(14.dp))
-                                    .background(SlateCard),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Text(
-                                    text = "Import a video or saved clip",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = TextMuted
+            // Truly lazy viewport-bounded LazyRow for filmstrip thumbnails:
+            // Only composes/decodes frames visible inside the viewport width.
+            if (project.videoClips.isNotEmpty()) {
+                LazyRow(
+                    state = filmstripLazyState,
+                    userScrollEnabled = false,
+                    contentPadding = PaddingValues(horizontal = trackPadDp),
+                    modifier = Modifier
+                        .padding(top = 42.dp)
+                        .width(viewportWidthDp)
+                        .height(74.dp)
+                        .clip(RoundedCornerShape(14.dp))
+                ) {
+                    items(
+                        items = filmstripItems,
+                        key = { it.stableKey }
+                    ) { slotItem ->
+                        when (slotItem) {
+                            is FilmstripSlotItem.TransitionSpacer -> {
+                                Spacer(modifier = Modifier.width(slotItem.widthDp))
+                            }
+                            is FilmstripSlotItem.ThumbSlot -> {
+                                LazyFilmstripThumbCell(
+                                    slot = slotItem,
+                                    thumbnailCache = thumbnailCache
                                 )
                             }
-                        } else {
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(78.dp)
-                                    .clip(RoundedCornerShape(14.dp))
-                                    .background(ObsidianBg.copy(alpha = 0.55f))
-                                    .padding(vertical = 2.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                var cursorX = trackPadPx
-                                project.videoClips.forEachIndexed { index, clip ->
-                                    val clipWidthDp = (clip.effectiveDurationMs * dpPerMs).dp.coerceAtLeast(64.dp)
-                                    val clipWidthPx = with(density) { clipWidthDp.toPx() }
-                                    val clipLeftPx = cursorX
-                                    cursorX += clipWidthPx + if (index < project.videoClips.lastIndex) transitionBadgePx else 0f
+                        }
+                    }
+                }
+            }
 
-                                    VideoTrackClipItem(
-                                        clip = clip,
-                                        index = index,
-                                        totalClips = project.videoClips.size,
-                                        widthDp = clipWidthDp,
-                                        clipLeftPx = clipLeftPx,
-                                        clipWidthPx = clipWidthPx,
-                                        visibleStartPx = visibleStartPx,
-                                        visibleEndPx = visibleEndPx,
-                                        pxPerMs = pxPerMs,
-                                        isSelected = clip.id == project.selectedVideoClipId,
-                                        thumbnailCache = thumbnailCache,
-                                        onSelect = { onSelectVideoClip(clip.id) },
-                                        onBeginContinuousEdit = onBeginContinuousEdit,
-                                        onCommitContinuousEdit = onCommitContinuousEdit,
-                                        onTrim = { newStart, newEnd ->
-                                            onTrimVideoClip(clip.id, newStart, newEnd)
-                                        },
-                                        onMoveOrder = { targetIndex ->
-                                            onMoveVideoClip(index, targetIndex)
-                                        }
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(scrollState)
+                    .padding(vertical = 10.dp)
+            ) {
+                Box(modifier = Modifier.width(contentWidthDp)) {
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        // Single-Canvas Time Ruler (Zero child composables during scrolling)
+                        TimelineRuler(
+                            totalMs = totalMs,
+                            zoomLevel = project.zoomLevel,
+                            pxPerMs = pxPerMs,
+                            trackPadDp = trackPadDp,
+                            visibleStartPx = visibleStartPx,
+                            visibleEndPx = visibleEndPx,
+                            maxSeekMs = latestTotalDuration,
+                            onSeekTo = onSeekTo,
+                            onScrubFinished = onScrubFinished,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(24.dp)
+                        )
+
+                        // Video Track interactive selection, trim handles & transition badges aligned over LazyRow filmstrip
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = trackPadDp)
+                        ) {
+                            if (project.videoClips.isEmpty()) {
+                                Box(
+                                    modifier = Modifier
+                                        .width(240.dp)
+                                        .height(74.dp)
+                                        .clip(RoundedCornerShape(14.dp))
+                                        .background(SlateCard),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        text = "Import a video or saved clip",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = TextMuted
                                     )
+                                }
+                            } else {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(78.dp)
+                                        .clip(RoundedCornerShape(14.dp))
+                                        .padding(vertical = 2.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    project.videoClips.forEachIndexed { index, clip ->
+                                        val clipWidthDp = (clip.effectiveDurationMs * dpPerMs).dp.coerceAtLeast(64.dp)
 
-                                    if (index < project.videoClips.lastIndex) {
-                                        val transSpec = project.transitions[clip.id]
-                                        val hasTransition = transSpec != null && transSpec.type != TransitionType.NONE
-                                        TactileSurface(
-                                            onClick = { onOpenTransitionPicker(clip.id) },
-                                            color = if (hasTransition) ClotchBlue else ElevatedSlate,
-                                            shape = CircleShape,
-                                            pressedScale = 0.90f,
-                                            modifier = Modifier
-                                                .padding(horizontal = 2.dp)
-                                                .size(28.dp)
-                                                .zIndex(6f)
-                                                .testTag("transition_badge_${clip.id}")
-                                        ) {
-                                            Box(contentAlignment = Alignment.Center) {
-                                                Icon(
-                                                    imageVector = Icons.AutoMirrored.Filled.CompareArrows,
-                                                    contentDescription = "Edit clip transition",
-                                                    tint = TextPrimary,
-                                                    modifier = Modifier.size(14.dp)
-                                                )
+                                        VideoTrackClipItem(
+                                            clip = clip,
+                                            index = index,
+                                            totalClips = project.videoClips.size,
+                                            widthDp = clipWidthDp,
+                                            pxPerMs = pxPerMs,
+                                            isSelected = clip.id == project.selectedVideoClipId,
+                                            onSelect = { onSelectVideoClip(clip.id) },
+                                            onBeginContinuousEdit = onBeginContinuousEdit,
+                                            onCommitContinuousEdit = onCommitContinuousEdit,
+                                            onTrim = { newStart, newEnd ->
+                                                onTrimVideoClip(clip.id, newStart, newEnd)
+                                            },
+                                            onMoveOrder = { targetIndex ->
+                                                onMoveVideoClip(index, targetIndex)
+                                            }
+                                        )
+
+                                        if (index < project.videoClips.lastIndex) {
+                                            val transSpec = project.transitions[clip.id]
+                                            val hasTransition = transSpec != null && transSpec.type != TransitionType.NONE
+                                            TactileSurface(
+                                                onClick = { onOpenTransitionPicker(clip.id) },
+                                                color = if (hasTransition) ClotchBlue else ElevatedSlate,
+                                                shape = CircleShape,
+                                                pressedScale = 0.90f,
+                                                modifier = Modifier
+                                                    .padding(horizontal = 2.dp)
+                                                    .size(28.dp)
+                                                    .zIndex(6f)
+                                                    .testTag("transition_badge_${clip.id}")
+                                            ) {
+                                                Box(contentAlignment = Alignment.Center) {
+                                                    Icon(
+                                                        imageVector = Icons.AutoMirrored.Filled.CompareArrows,
+                                                        contentDescription = "Edit clip transition",
+                                                        tint = TextPrimary,
+                                                        modifier = Modifier.size(14.dp)
+                                                    )
+                                                }
                                             }
                                         }
                                     }
                                 }
                             }
                         }
-                    }
 
                     // Text Overlays, Auto Captions & Stickers Track
                     if (project.overlays.isNotEmpty() || project.stickers.isNotEmpty()) {
@@ -382,6 +497,7 @@ fun TimelineCanvas(
                 )
             }
         }
+    }
     }
 }
 
@@ -586,40 +702,60 @@ private fun TimelineRuler(
 }
 
 @Composable
+private fun LazyFilmstripThumbCell(
+    slot: FilmstripSlotItem.ThumbSlot,
+    thumbnailCache: EditorThumbnailCache
+) {
+    val context = LocalContext.current
+    val cachedInstant = remember(slot.sourceUri, slot.bucketKey) {
+        thumbnailCache.peekFrame(slot.sourceUri, slot.sampleTimeMs)
+    }
+    val bitmap by produceState<Bitmap?>(
+        initialValue = cachedInstant,
+        key1 = slot.sourceUri,
+        key2 = slot.bucketKey
+    ) {
+        if (value == null) {
+            value = thumbnailCache.getFrame(context, slot.sourceUri, slot.sampleTimeMs)
+        }
+    }
+    Box(
+        modifier = Modifier
+            .width(slot.widthDp)
+            .fillMaxHeight()
+            .background(ObsidianBg)
+    ) {
+        val bmp = bitmap
+        if (bmp != null && !bmp.isRecycled) {
+            Image(
+                bitmap = bmp.asImageBitmap(),
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize()
+            )
+        }
+    }
+}
+
+@Composable
 private fun VideoTrackClipItem(
     clip: TimelineVideoClip,
     index: Int,
     totalClips: Int,
     widthDp: Dp,
-    clipLeftPx: Float,
-    clipWidthPx: Float,
-    visibleStartPx: Float,
-    visibleEndPx: Float,
     pxPerMs: Float,
     isSelected: Boolean,
-    thumbnailCache: EditorThumbnailCache,
     onSelect: () -> Unit,
     onBeginContinuousEdit: () -> Unit,
     onCommitContinuousEdit: () -> Unit,
     onTrim: (newStartMs: Long, newEndMs: Long) -> Unit,
     onMoveOrder: (targetIndex: Int) -> Unit
 ) {
-    val context = LocalContext.current
     val density = LocalDensity.current
     val haptic = LocalHapticFeedback.current
     val currentClip by rememberUpdatedState(clip)
     var dragReorderOffsetPx by remember { mutableFloatStateOf(0f) }
-
-    val thumbCount = ((widthDp.value / 68f).toInt()).coerceIn(1, 120)
-    val slotWidthPx = (clipWidthPx / thumbCount.toFloat()).coerceAtLeast(1f)
-    val slotWidthDp = (widthDp / thumbCount.toFloat())
     val clipShape = RoundedCornerShape(12.dp)
-
-    val prefetchPx = 220f
-    val rawFirstSlot = floor(((visibleStartPx - prefetchPx) - clipLeftPx) / slotWidthPx).toInt()
-    val rawLastSlot = ceil(((visibleEndPx + prefetchPx) - clipLeftPx) / slotWidthPx).toInt()
-    val firstVisibleSlot = rawFirstSlot.coerceIn(0, thumbCount)
-    val lastVisibleSlot = rawLastSlot.coerceIn(-1, thumbCount - 1)
 
     val selectionModifier = if (isSelected) {
         Modifier
@@ -630,12 +766,11 @@ private fun VideoTrackClipItem(
                 spotColor = ClotchBlue
             )
             .clip(clipShape)
-            .background(SlateCard)
             .border(2.dp, ClotchBlue, clipShape)
     } else {
         Modifier
             .clip(clipShape)
-            .background(SlateCard)
+            .border(1.dp, ElevatedSlate.copy(alpha = 0.55f), clipShape)
     }
 
     Box(
@@ -676,57 +811,6 @@ private fun VideoTrackClipItem(
             }
             .testTag("timeline_video_clip_${clip.id}")
     ) {
-        // Truly virtualized filmstrip: ONLY render visible thumbnail slots flanked by left/right Spacers
-        Row(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(ObsidianBg),
-            horizontalArrangement = Arrangement.spacedBy(0.dp)
-        ) {
-            if (lastVisibleSlot >= firstVisibleSlot) {
-                if (firstVisibleSlot > 0) {
-                    Spacer(modifier = Modifier.width(slotWidthDp * firstVisibleSlot))
-                }
-                for (slot in firstVisibleSlot..lastVisibleSlot) {
-                    key(slot) {
-                        val fraction = (slot + 0.5f) / thumbCount.toFloat()
-                        val sampleTimeMs = clip.trimStartMs + (clip.effectiveDurationMs * fraction).toLong()
-                        val bucketKey = sampleTimeMs / 500L
-                        val cachedInstant = remember(clip.sourceUri, bucketKey) {
-                            thumbnailCache.peekFrame(clip.sourceUri, sampleTimeMs)
-                        }
-                        val bitmap by produceState<Bitmap?>(
-                            initialValue = cachedInstant,
-                            key1 = clip.sourceUri,
-                            key2 = bucketKey
-                        ) {
-                            if (value == null) {
-                                value = thumbnailCache.getFrame(context, clip.sourceUri, sampleTimeMs)
-                            }
-                        }
-                        Box(
-                            modifier = Modifier
-                                .width(slotWidthDp)
-                                .fillMaxHeight()
-                                .background(ObsidianBg)
-                        ) {
-                            if (bitmap != null && !bitmap!!.isRecycled) {
-                                Image(
-                                    bitmap = bitmap!!.asImageBitmap(),
-                                    contentDescription = null,
-                                    contentScale = ContentScale.Crop,
-                                    modifier = Modifier.fillMaxSize()
-                                )
-                            }
-                        }
-                    }
-                }
-                val remainingSlots = (thumbCount - 1 - lastVisibleSlot).coerceAtLeast(0)
-                if (remainingSlots > 0) {
-                    Spacer(modifier = Modifier.width(slotWidthDp * remainingSlots))
-                }
-            }
-        }
 
         // Top-left label pill
         Surface(

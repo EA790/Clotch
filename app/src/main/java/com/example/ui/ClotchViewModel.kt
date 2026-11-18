@@ -259,7 +259,15 @@ class ClotchViewModel(application: Application) : AndroidViewModel(application) 
         viewModelScope.launch {
             _isFetchingProfile.value = true
             try {
-                profileManager.fetchAndSaveProfile(accessToken, isBearerOAuth = true)
+                val cleanToken = DiscordProfileManager.sanitizeToken(accessToken)
+                val result = profileManager.fetchAndSaveProfile(cleanToken, isBearerOAuth = true)
+                if (cleanToken.isNotBlank()) {
+                    settingsRepo.setDiscordToken(cleanToken)
+                    controller.connectDiscordRpc(cleanToken)
+                }
+                if (result.isFailure && cleanToken.isBlank()) {
+                    showToast("OAuth2 callback returned an empty token")
+                }
             } catch (t: Throwable) {
                 showToast("OAuth2 sign-in failed: ${t.localizedMessage ?: "Unknown error"}")
             } finally {

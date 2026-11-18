@@ -22,7 +22,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.MovieCreation
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Transform
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -58,6 +61,7 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import com.example.R
+import com.example.editor.EditorPreviewError
 import com.example.editor.model.ColorFilterPreset
 import com.example.editor.model.EditorFontChoice
 import com.example.editor.model.EditorProject
@@ -77,6 +81,7 @@ import com.example.ui.theme.JetBrainsMonoFamily
 import com.example.ui.theme.ObsidianBg
 import com.example.ui.theme.SpaceGroteskFamily
 import com.example.ui.theme.TextPrimary
+import com.example.ui.theme.TextSecondary
 import com.example.ui.theme.WarningAmber
 import kotlinx.coroutines.flow.StateFlow
 import java.util.Locale
@@ -87,12 +92,15 @@ import kotlin.math.roundToInt
 fun EditorPreviewStage(
     project: EditorProject,
     playheadMsFlow: StateFlow<Long>,
-    exoPlayer: ExoPlayer,
+    exoPlayer: ExoPlayer?,
+    previewError: EditorPreviewError?,
     isBusy: Boolean,
     voiceoverState: VoiceoverState,
     isEditorActive: Boolean = true,
     onPreparePreview: () -> Unit = {},
     onStopPreview: () -> Unit = {},
+    onRetryPreview: () -> Unit = {},
+    onConvertWebmToMp4: (String?) -> Unit = {},
     onImportGallery: () -> Unit,
     onOpenSavedClips: () -> Unit,
     onSelectOverlay: (String) -> Unit,
@@ -115,11 +123,11 @@ fun EditorPreviewStage(
         } else {
             latestOnPrepare()
             playerViewRef?.let { pv ->
-                pv.visibility = View.VISIBLE
+                pv.visibility = if (exoPlayer != null && previewError == null) View.VISIBLE else View.INVISIBLE
                 if (pv.player !== exoPlayer) {
                     pv.player = exoPlayer
                 }
-                pv.onResume()
+                if (exoPlayer != null) pv.onResume() else pv.onPause()
             }
         }
 
@@ -129,11 +137,11 @@ fun EditorPreviewStage(
                     if (isEditorActive) {
                         latestOnPrepare()
                         playerViewRef?.let { pv ->
-                            pv.visibility = View.VISIBLE
+                            pv.visibility = if (exoPlayer != null) View.VISIBLE else View.INVISIBLE
                             if (pv.player !== exoPlayer) {
                                 pv.player = exoPlayer
                             }
-                            pv.onResume()
+                            if (exoPlayer != null) pv.onResume()
                         }
                     }
                 }
@@ -229,6 +237,67 @@ fun EditorPreviewStage(
                         }
                     }
                 }
+            } else if (previewError != null) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(CarbonSurface)
+                        .padding(16.dp)
+                        .testTag("editor_preview_error_card"),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.ErrorOutline,
+                        contentDescription = null,
+                        tint = WarningAmber,
+                        modifier = Modifier.size(30.dp)
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        text = previewError.message,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = TextSecondary,
+                        textAlign = TextAlign.Center
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        TactilePillButton(
+                            onClick = onRetryPreview,
+                            modifier = Modifier
+                                .height(48.dp)
+                                .testTag("editor_preview_retry_button"),
+                            containerColor = ElevatedSlate,
+                            contentColor = TextPrimary
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.Refresh,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.size(6.dp))
+                            Text("Retry")
+                        }
+                        if (previewError.isWebmFallbackAvailable) {
+                            TactilePillButton(
+                                onClick = { onConvertWebmToMp4(previewError.failingClipId) },
+                                modifier = Modifier
+                                    .height(48.dp)
+                                    .testTag("editor_convert_webm_button"),
+                                containerColor = ClotchBlue,
+                                contentColor = TextPrimary
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Filled.Transform,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(modifier = Modifier.size(6.dp))
+                                Text("Convert to MP4")
+                            }
+                        }
+                    }
+                }
             } else {
                 // Aspect-Ratio bounded Viewport
                 BoxWithConstraints(
@@ -243,77 +312,71 @@ fun EditorPreviewStage(
 
                     val playheadState = playheadMsFlow.collectAsStateWithLifecycle()
 
-                    AndroidView(
-                        factory = { ctx ->
-                            val inflated = LayoutInflater.from(ctx).inflate(
-                                R.layout.view_editor_player,
-                                null,
-                                false
-                            ) as PlayerView
-                            inflated.apply {
-                                useController = false
-                                resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
-                                setShowBuffering(PlayerView.SHOW_BUFFERING_NEVER)
-                                setKeepContentOnPlayerReset(isEditorActive)
-                                layoutParams = ViewGroup.LayoutParams(
-                                    ViewGroup.LayoutParams.MATCH_PARENT,
-                                    ViewGroup.LayoutParams.MATCH_PARENT
-                                )
-                                player = if (isEditorActive) exoPlayer else null
-                                visibility = if (isEditorActive) View.VISIBLE else View.INVISIBLE
-                                playerViewRef = this
-                            }
-                        },
-                        update = { pv ->
-                            playerViewRef = pv
-                            pv.setKeepContentOnPlayerReset(isEditorActive)
-                            val targetPlayer = if (isEditorActive) exoPlayer else null
-                            pv.visibility = if (isEditorActive) View.VISIBLE else View.INVISIBLE
-                            if (pv.player !== targetPlayer) {
-                                if (targetPlayer == null) {
-                                    pv.onPause()
+                    if (isEditorActive && exoPlayer != null) {
+                        AndroidView(
+                            factory = { ctx ->
+                                val inflated = LayoutInflater.from(ctx).inflate(
+                                    R.layout.view_editor_player,
+                                    null,
+                                    false
+                                ) as PlayerView
+                                inflated.apply {
+                                    useController = false
+                                    resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
+                                    setShowBuffering(PlayerView.SHOW_BUFFERING_NEVER)
+                                    setKeepContentOnPlayerReset(true)
+                                    layoutParams = ViewGroup.LayoutParams(
+                                        ViewGroup.LayoutParams.MATCH_PARENT,
+                                        ViewGroup.LayoutParams.MATCH_PARENT
+                                    )
+                                    player = exoPlayer
+                                    visibility = View.VISIBLE
+                                    playerViewRef = this
                                 }
-                                pv.player = targetPlayer
-                                if (targetPlayer != null) {
+                            },
+                            update = { pv ->
+                                playerViewRef = pv
+                                pv.setKeepContentOnPlayerReset(true)
+                                pv.visibility = View.VISIBLE
+                                if (pv.player !== exoPlayer) {
+                                    pv.player = exoPlayer
                                     pv.onResume()
                                 }
-                            }
-                        },
-                        onReset = { pv ->
-                            pv.visibility = View.INVISIBLE
-                            pv.onPause()
-                            pv.player = null
-                            exoPlayer.clearVideoSurface()
-                        },
-                        onRelease = { pv ->
-                            pv.visibility = View.INVISIBLE
-                            pv.onPause()
-                            pv.player = null
-                            exoPlayer.clearVideoSurface()
-                            if (playerViewRef === pv) {
-                                playerViewRef = null
-                            }
-                        },
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .graphicsLayer {
-                                val currentPlayhead = playheadState.value
-                                val activeWindow = project.findVideoClipAt(currentPlayhead)
-                                if (activeWindow != null) {
-                                    val activeClip = activeWindow.clip
-                                    val localOffset = (currentPlayhead - activeWindow.timelineStartMs).coerceAtLeast(0L)
-                                    val kfEval = activeClip.evaluateKeyframesAt(localOffset)
-                                    rotationZ = activeClip.rotationDegrees.toFloat()
-                                    translationX = kfEval.posX * stageW
-                                    translationY = kfEval.posY * stageH
-                                    scaleX = kfEval.scale
-                                    scaleY = kfEval.scale
-                                    alpha = if (isEditorActive) kfEval.opacity else 0f
-                                } else if (!isEditorActive) {
-                                    alpha = 0f
+                            },
+                            onReset = { pv ->
+                                pv.visibility = View.INVISIBLE
+                                pv.onPause()
+                                pv.player = null
+                                exoPlayer.clearVideoSurface()
+                            },
+                            onRelease = { pv ->
+                                pv.visibility = View.INVISIBLE
+                                pv.onPause()
+                                pv.player = null
+                                exoPlayer.clearVideoSurface()
+                                if (playerViewRef === pv) {
+                                    playerViewRef = null
                                 }
-                            }
-                    )
+                            },
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .graphicsLayer {
+                                    val currentPlayhead = playheadState.value
+                                    val activeWindow = project.findVideoClipAt(currentPlayhead)
+                                    if (activeWindow != null) {
+                                        val activeClip = activeWindow.clip
+                                        val localOffset = (currentPlayhead - activeWindow.timelineStartMs).coerceAtLeast(0L)
+                                        val kfEval = activeClip.evaluateKeyframesAt(localOffset)
+                                        rotationZ = activeClip.rotationDegrees.toFloat()
+                                        translationX = kfEval.posX * stageW
+                                        translationY = kfEval.posY * stageH
+                                        scaleX = kfEval.scale
+                                        scaleY = kfEval.scale
+                                        alpha = kfEval.opacity
+                                    }
+                                }
+                        )
+                    }
 
                     PreviewLiveOverlaysLayer(
                         project = project,

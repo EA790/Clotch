@@ -20,6 +20,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.OpenInBrowser
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Visibility
@@ -49,8 +50,10 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
@@ -60,6 +63,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import coil.compose.AsyncImage
 import com.example.R
+import com.example.discord.DiscordProfileManager
 import com.example.discord.DiscordUserProfile
 import com.example.ui.theme.CarbonSurface
 import com.example.ui.theme.ClotchBlue
@@ -462,11 +466,55 @@ fun DiscordSignInDialog(
                         colors = clotchTonalFieldColors(accentColor = DiscordBlurple)
                     )
                 } else {
+                    val clipboardManager = LocalClipboardManager.current
+                    var copiedRedirect by remember { mutableStateOf(false) }
                     Text(
-                        text = "Opens Discord's official OAuth2 page in your browser using redirect URI clotch://discord-callback.",
+                        text = "Implicit OAuth2 (response_type=token). Register this Redirect URI in Discord Developer Portal -> OAuth2 -> Redirects:",
                         style = MaterialTheme.typography.bodySmall,
                         color = TextSecondary
                     )
+                    Surface(
+                        color = CarbonSurface,
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                text = DiscordProfileManager.OAUTH_REDIRECT_URI,
+                                style = MaterialTheme.typography.labelMedium,
+                                color = ClotchBlue,
+                                modifier = Modifier.weight(1f),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            TextButton(
+                                onClick = {
+                                    clipboardManager.setText(AnnotatedString(DiscordProfileManager.OAUTH_REDIRECT_URI))
+                                    copiedRedirect = true
+                                },
+                                modifier = Modifier.testTag("copy_oauth_redirect_button")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Filled.ContentCopy,
+                                    contentDescription = "Copy redirect URI",
+                                    tint = ClotchBlue,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text(
+                                    text = if (copiedRedirect) "Copied" else "Copy",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = ClotchBlue
+                                )
+                            }
+                        }
+                    }
                     OutlinedTextField(
                         value = clientIdInput,
                         onValueChange = { clientIdInput = it },

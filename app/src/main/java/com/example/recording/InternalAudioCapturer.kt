@@ -291,6 +291,28 @@ class MicPcmCapturer(
 
 object GameAudioPostProcessor {
 
+    fun verifyMp4HasVideoTrack(file: File): Boolean {
+        if (!file.exists() || file.length() <= 0L) return false
+        val extractor = MediaExtractor()
+        return try {
+            extractor.setDataSource(file.absolutePath)
+            var hasVideo = false
+            for (i in 0 until extractor.trackCount) {
+                val fmt = extractor.getTrackFormat(i)
+                val mime = fmt.getString(MediaFormat.KEY_MIME).orEmpty()
+                if (mime.startsWith("video/")) {
+                    hasVideo = true
+                    break
+                }
+            }
+            hasVideo
+        } catch (_: Throwable) {
+            false
+        } finally {
+            runCatching { extractor.release() }
+        }
+    }
+
     suspend fun encodePcmToM4a(pcmFile: File, outM4a: File): Boolean = withContext(Dispatchers.IO) {
         if (!pcmFile.exists() || pcmFile.length() <= 0L) return@withContext false
         if (outM4a.exists()) outM4a.delete()
@@ -519,6 +541,7 @@ object GameAudioPostProcessor {
             var totalSamplesWritten = 0L
             var sawInputEos = false
             var sawOutputEos = false
+            var idleOutputSpins = 0
 
             while (!sawOutputEos) {
                 if (!sawInputEos) {
@@ -551,6 +574,7 @@ object GameAudioPostProcessor {
                 val outIdx = codec.dequeueOutputBuffer(bufferInfo, 10_000L)
                 when {
                     outIdx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
+                        idleOutputSpins = 0
                         if (!muxerStarted) {
                             trackIndex = muxer.addTrack(codec.outputFormat)
                             muxer.start()
@@ -558,6 +582,7 @@ object GameAudioPostProcessor {
                         }
                     }
                     outIdx >= 0 -> {
+                        idleOutputSpins = 0
                         val outBuf = codec.getOutputBuffer(outIdx)
                         if (outBuf != null && (bufferInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) == 0 &&
                             bufferInfo.size > 0 && muxerStarted
@@ -570,6 +595,14 @@ object GameAudioPostProcessor {
                             sawOutputEos = true
                         }
                         codec.releaseOutputBuffer(outIdx, false)
+                    }
+                    outIdx == MediaCodec.INFO_TRY_AGAIN_LATER -> {
+                        if (sawInputEos) {
+                            idleOutputSpins++
+                            if (idleOutputSpins > 100) {
+                                break
+                            }
+                        }
                     }
                 }
             }

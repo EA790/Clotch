@@ -1,5 +1,6 @@
 package com.example.editor.engine
 
+import android.content.ComponentCallbacks2
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
@@ -7,25 +8,41 @@ import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Build
 import android.util.LruCache
+import com.example.diagnostics.CrashLogger
+import com.example.diagnostics.MemoryPressureListener
+import com.example.diagnostics.MemoryPressureManager
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import java.util.concurrent.ConcurrentHashMap
+import kotlin.coroutines.coroutineContext
 
+/**
+ * Heap-bounded LRU thumbnail cache for timeline filmstrips.
+ * Never keeps a MediaMetadataRetriever instance pinned open between frame decodes:
+ * each decode opens a retriever, extracts one frame, and immediately calls release()
+ * in a try/finally block so native codecs & file descriptors are freed right away.
+ */
 class EditorThumbnailCache {
 
     companion object {
-        // 12 MB byte-bounded RGB_565 bitmap pool (~420 filmstrip frames in ~12 MB)
-        private const val MAX_CACHE_KB = 12 * 1024
         private const val BUCKET_MS = 500L
+
+        private fun computeMaxCacheKb(): Int {
+            val maxHeapKb = (Runtime.getRuntime().maxMemory() / 1024L).toInt().coerceAtLeast(32 * 1024)
+            return (maxHeapKb / 24).coerceIn(4 * 1024, 8 * 1024)
+        }
     }
 
     @OptIn(ExperimentalCoroutinesApi::class)
     private val decodeDispatcher = Dispatchers.IO.limitedParallelism(1)
 
-    private val memoryCache = object : LruCache<String, Bitmap>(MAX_CACHE_KB) {
+    private val maxCacheKb = computeMaxCacheKb()
+
+    private val memoryCache = object : LruCache<String, Bitmap>(maxCacheKb) {
         override fun sizeOf(key: String, value: Bitmap): Int {
             return (value.allocationByteCount / 1024).coerceAtLeast(1)
         }
@@ -33,9 +50,13 @@ class EditorThumbnailCache {
 
     private val inFlight = ConcurrentHashMap<String, CompletableDeferred<Bitmap?>>()
 
-    // Guarded strictly by single-threaded decodeDispatcher
-    private var pooledUriKey: String? = null
-    private var pooledRetriever: MediaMetadataRetriever? = null
+    private val pressureListener = MemoryPressureListener { level ->
+        onTrimMemory(level)
+    }
+
+    init {
+        MemoryPressureManager.registerListener(pressureListener)
+    }
 
     fun peekFrame(
         uri: Uri,
@@ -54,10 +75,9 @@ class EditorThumbnailCache {
         targetWidth: Int = 160,
         targetHeight: Int = 90
     ): Bitmap? {
-        val safeW = targetWidth.coerceIn(64, 200)
-        val safeH = targetHeight.coerceIn(48, 120)
-        val bucketMs = ((timeMs.coerceAtLeast(0L)) / BUCKET_MS) * BUCKET_MS
-        val key = "${uri}_${bucketMs}_${safeW}x${safeH}"
+        val safeW = targetWidth.coerceIn(64, 180)
+        val safeH = targetHeight.coerceIn(48, 110)
+        val key = buildCacheKey(uri, timeMs, safeW, safeH)
 
         memoryCache.get(key)?.takeIf { !it.isRecycled }?.let { return it }
 
@@ -73,34 +93,20 @@ class EditorThumbnailCache {
         }
 
         val appContext = context.applicationContext
+        val bucketMs = ((timeMs.coerceAtLeast(0L)) / BUCKET_MS) * BUCKET_MS
         return try {
-            val extracted = withContext(decodeDispatcher + NonCancellable) {
+            val extracted = withContext(decodeDispatcher) {
+                coroutineContext.ensureActive()
                 memoryCache.get(key)?.takeIf { !it.isRecycled }?.let { return@withContext it }
 
-                val retriever = obtainPooledRetriever(appContext, uri) ?: return@withContext null
                 val timeUs = (bucketMs * 1000L).coerceAtLeast(0L)
-                val rawBitmap = try {
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
-                        retriever.getScaledFrameAtTime(
-                            timeUs,
-                            MediaMetadataRetriever.OPTION_CLOSEST_SYNC,
-                            safeW,
-                            safeH
-                        ) ?: retriever.getFrameAtTime(
-                            timeUs,
-                            MediaMetadataRetriever.OPTION_CLOSEST_SYNC
-                        )
-                    } else {
-                        retriever.getFrameAtTime(
-                            timeUs,
-                            MediaMetadataRetriever.OPTION_CLOSEST_SYNC
-                        )
-                    }
-                } catch (_: Throwable) {
-                    // Retriever may have lost its underlying FD/decoder; reset pool for next request
-                    releasePooledRetriever()
-                    null
-                }
+                val rawBitmap = extractSingleFrameSafely(
+                    appContext = appContext,
+                    uri = uri,
+                    timeUs = timeUs,
+                    targetWidth = safeW,
+                    targetHeight = safeH
+                )
                 toCompactThumbnail(rawBitmap, safeW, safeH)
             }
 
@@ -109,6 +115,14 @@ class EditorThumbnailCache {
             }
             deferred.complete(extracted)
             extracted
+        } catch (ce: CancellationException) {
+            deferred.cancel(ce)
+            throw ce
+        } catch (oom: OutOfMemoryError) {
+            onTrimMemory(ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL)
+            CrashLogger.logError("EditorThumbnailCache", "OOM extracting frame at ${bucketMs}ms for $uri", oom)
+            deferred.complete(null)
+            null
         } catch (_: Throwable) {
             deferred.complete(null)
             null
@@ -117,15 +131,15 @@ class EditorThumbnailCache {
         }
     }
 
-    private fun obtainPooledRetriever(appContext: Context, uri: Uri): MediaMetadataRetriever? {
-        val uriKey = uri.toString()
-        if (pooledUriKey == uriKey && pooledRetriever != null) {
-            return pooledRetriever
-        }
-        releasePooledRetriever()
-
+    private fun extractSingleFrameSafely(
+        appContext: Context,
+        uri: Uri,
+        timeUs: Long,
+        targetWidth: Int,
+        targetHeight: Int
+    ): Bitmap? {
         val retriever = MediaMetadataRetriever()
-        val opened = try {
+        return try {
             var pfdOk = false
             if (uri.scheme.equals("content", ignoreCase = true)) {
                 appContext.contentResolver.openFileDescriptor(uri, "r")?.use { pfd ->
@@ -136,27 +150,30 @@ class EditorThumbnailCache {
             if (!pfdOk) {
                 retriever.setDataSource(appContext, uri)
             }
-            true
-        } catch (_: Throwable) {
-            false
-        }
 
-        return if (opened) {
-            pooledUriKey = uriKey
-            pooledRetriever = retriever
-            retriever
-        } else {
-            runCatching { retriever.release() }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+                retriever.getScaledFrameAtTime(
+                    timeUs,
+                    MediaMetadataRetriever.OPTION_CLOSEST_SYNC,
+                    targetWidth,
+                    targetHeight
+                ) ?: retriever.getFrameAtTime(
+                    timeUs,
+                    MediaMetadataRetriever.OPTION_CLOSEST_SYNC
+                )
+            } else {
+                retriever.getFrameAtTime(
+                    timeUs,
+                    MediaMetadataRetriever.OPTION_CLOSEST_SYNC
+                )
+            }
+        } catch (oom: OutOfMemoryError) {
+            onTrimMemory(ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL)
             null
-        }
-    }
-
-    private fun releasePooledRetriever() {
-        val existing = pooledRetriever
-        pooledRetriever = null
-        pooledUriKey = null
-        if (existing != null) {
-            runCatching { existing.release() }
+        } catch (_: Throwable) {
+            null
+        } finally {
+            runCatching { retriever.release() }
         }
     }
 
@@ -168,43 +185,84 @@ class EditorThumbnailCache {
         raw ?: return null
         if (raw.isRecycled) return null
 
+        val softwareBitmap = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+            raw.config == Bitmap.Config.HARDWARE
+        ) {
+            val copied = runCatching { raw.copy(Bitmap.Config.ARGB_8888, false) }.getOrNull()
+            raw.recycle()
+            copied ?: return null
+        } else {
+            raw
+        }
+
+        if (softwareBitmap.width <= maxW &&
+            softwareBitmap.height <= maxH &&
+            softwareBitmap.config == Bitmap.Config.RGB_565
+        ) {
+            return softwareBitmap
+        }
+
         val scale = minOf(
-            maxW.toFloat() / raw.width.coerceAtLeast(1),
-            maxH.toFloat() / raw.height.coerceAtLeast(1),
+            maxW.toFloat() / softwareBitmap.width.coerceAtLeast(1),
+            maxH.toFloat() / softwareBitmap.height.coerceAtLeast(1),
             1f
         )
-        val outW = (raw.width * scale).toInt().coerceAtLeast(32)
-        val outH = (raw.height * scale).toInt().coerceAtLeast(32)
-
-        if (raw.width <= maxW && raw.height <= maxH && raw.config == Bitmap.Config.RGB_565) {
-            return raw
-        }
+        val outW = (softwareBitmap.width * scale).toInt().coerceAtLeast(32)
+        val outH = (softwareBitmap.height * scale).toInt().coerceAtLeast(32)
 
         return try {
             val compact = Bitmap.createBitmap(outW, outH, Bitmap.Config.RGB_565)
             val canvas = Canvas(compact)
-            val srcRect = android.graphics.Rect(0, 0, raw.width, raw.height)
+            val srcRect = android.graphics.Rect(0, 0, softwareBitmap.width, softwareBitmap.height)
             val dstRect = android.graphics.Rect(0, 0, outW, outH)
-            canvas.drawBitmap(raw, srcRect, dstRect, null)
-            raw.recycle()
+            canvas.drawBitmap(softwareBitmap, srcRect, dstRect, null)
+            softwareBitmap.recycle()
             compact
+        } catch (oom: OutOfMemoryError) {
+            softwareBitmap.recycle()
+            onTrimMemory(ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL)
+            null
         } catch (_: Throwable) {
-            raw.recycle()
+            softwareBitmap.recycle()
             null
         }
     }
 
     private fun buildCacheKey(uri: Uri, timeMs: Long, targetWidth: Int, targetHeight: Int): String {
-        val safeW = targetWidth.coerceIn(64, 200)
-        val safeH = targetHeight.coerceIn(48, 120)
+        val safeW = targetWidth.coerceIn(64, 180)
+        val safeH = targetHeight.coerceIn(48, 110)
         val bucketMs = ((timeMs.coerceAtLeast(0L)) / BUCKET_MS) * BUCKET_MS
         return "${uri}_${bucketMs}_${safeW}x${safeH}"
+    }
+
+    @Suppress("DEPRECATION")
+    fun onTrimMemory(level: Int) {
+        when {
+            level >= ComponentCallbacks2.TRIM_MEMORY_COMPLETE ||
+                level >= ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL ||
+                level >= ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN -> {
+                memoryCache.evictAll()
+            }
+            level >= ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW ||
+                level >= ComponentCallbacks2.TRIM_MEMORY_BACKGROUND -> {
+                memoryCache.trimToSize(memoryCache.size() / 2)
+            }
+            else -> {
+                memoryCache.trimToSize((memoryCache.size() * 3) / 4)
+            }
+        }
     }
 
     fun clear() {
         inFlight.values.forEach { it.cancel() }
         inFlight.clear()
         memoryCache.evictAll()
-        releasePooledRetriever()
     }
+
+    fun release() {
+        MemoryPressureManager.unregisterListener(pressureListener)
+        clear()
+    }
+
+    internal fun currentSizeKb(): Int = memoryCache.size()
 }
