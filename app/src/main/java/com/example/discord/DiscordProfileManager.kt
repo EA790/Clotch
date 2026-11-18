@@ -173,7 +173,7 @@ class DiscordProfileManager(private val context: Context) {
             .appendQueryParameter("client_id", clientId.trim())
             .appendQueryParameter("redirect_uri", OAUTH_REDIRECT_URI)
             .appendQueryParameter("response_type", "token")
-            .appendQueryParameter("scope", "identify")
+            .appendQueryParameter("scope", "identify rpc")
             .build()
             .toString()
     }
