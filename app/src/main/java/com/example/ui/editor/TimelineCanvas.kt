@@ -27,6 +27,7 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -162,15 +163,22 @@ fun TimelineCanvas(
 ) {
     val density = LocalDensity.current
     val scrollState = rememberScrollState()
-    val pxPerSecond = 64f * project.zoomLevel
-    val dpPerMs = pxPerSecond / 1000f
-    val pxPerMs = with(density) { pxPerSecond.dp.toPx() } / 1000f
+    val maxTimelineWidthDp = 10_000f
+    val timelineEndPadDp = 180f
+    val rawDpPerMs = (64f * project.zoomLevel) / 1000f
+    val totalMs = project.totalTimelineDurationMs.coerceAtLeast(10_000L)
+    val dpPerMs = minOf(
+        rawDpPerMs,
+        (maxTimelineWidthDp - timelineEndPadDp) / totalMs.toFloat()
+    ).coerceAtLeast(0.0005f)
+    val pxPerMs = (with(density) { (dpPerMs * 1000f).dp.toPx() } / 1000f).coerceAtLeast(0.001f)
     val trackPadDp = 16.dp
     val trackPadPx = with(density) { trackPadDp.toPx() }
     val transitionBadgePx = with(density) { 32.dp.toPx() }
 
-    val totalMs = project.totalTimelineDurationMs.coerceAtLeast(10_000L)
-    val contentWidthDp: Dp = ((totalMs * dpPerMs) + 180f).dp
+    val contentWidthDp: Dp = ((totalMs * dpPerMs) + timelineEndPadDp)
+        .coerceIn(320f, maxTimelineWidthDp)
+        .dp
     val latestTotalDuration by rememberUpdatedState(project.totalTimelineDurationMs.coerceAtLeast(1000L))
 
     // Quantized horizontal viewport bounds to prevent scroll-pixel recomposition jitter
@@ -192,9 +200,10 @@ fun TimelineCanvas(
         derivedStateOf {
             buildList {
                 project.videoClips.forEachIndexed { index, clip ->
-                    val clipWidthDp = (clip.effectiveDurationMs * dpPerMs).dp.coerceAtLeast(64.dp)
+                    val clipWidthDp = (clip.effectiveDurationMs * dpPerMs).dp
+                        .coerceIn(64.dp, 10000.dp)
                     val thumbCount = ((clipWidthDp.value / 68f).toInt()).coerceIn(1, 120)
-                    val slotWidthDp = clipWidthDp / thumbCount.toFloat()
+                    val slotWidthDp = (clipWidthDp / thumbCount.toFloat()).coerceIn(1.dp, 10000.dp)
                     for (slot in 0 until thumbCount) {
                         val fraction = (slot + 0.5f) / thumbCount.toFloat()
                         val sampleTimeMs = clip.trimStartMs + (clip.effectiveDurationMs * fraction).toLong()
@@ -270,7 +279,7 @@ fun TimelineCanvas(
         shape = ClotchCardShape
     ) {
         BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
-            val viewportWidthDp = maxWidth
+            val viewportWidthDp = maxWidth.coerceIn(1.dp, 10000.dp)
 
             // Truly lazy viewport-bounded LazyRow for filmstrip thumbnails:
             // Only composes/decodes frames visible inside the viewport width.
@@ -280,9 +289,10 @@ fun TimelineCanvas(
                     userScrollEnabled = false,
                     contentPadding = PaddingValues(horizontal = trackPadDp),
                     modifier = Modifier
-                        .padding(top = 42.dp)
+                        .padding(top = 40.dp)
                         .width(viewportWidthDp)
-                        .height(74.dp)
+                        .widthIn(max = 10000.dp)
+                        .height(80.dp)
                         .clip(RoundedCornerShape(14.dp))
                 ) {
                     items(
@@ -291,7 +301,11 @@ fun TimelineCanvas(
                     ) { slotItem ->
                         when (slotItem) {
                             is FilmstripSlotItem.TransitionSpacer -> {
-                                Spacer(modifier = Modifier.width(slotItem.widthDp))
+                                Spacer(
+                                    modifier = Modifier
+                                        .width(slotItem.widthDp.coerceIn(1.dp, 10000.dp))
+                                        .height(80.dp)
+                                )
                             }
                             is FilmstripSlotItem.ThumbSlot -> {
                                 LazyFilmstripThumbCell(
@@ -310,7 +324,11 @@ fun TimelineCanvas(
                     .horizontalScroll(scrollState)
                     .padding(vertical = 10.dp)
             ) {
-                Box(modifier = Modifier.width(contentWidthDp)) {
+                Box(
+                    modifier = Modifier
+                        .width(contentWidthDp)
+                        .widthIn(max = 10000.dp)
+                ) {
                     Column(
                         modifier = Modifier.fillMaxWidth(),
                         verticalArrangement = Arrangement.spacedBy(6.dp)
@@ -335,13 +353,15 @@ fun TimelineCanvas(
                         Box(
                             modifier = Modifier
                                 .fillMaxWidth()
+                                .widthIn(max = 10000.dp)
                                 .padding(horizontal = trackPadDp)
                         ) {
                             if (project.videoClips.isEmpty()) {
                                 Box(
                                     modifier = Modifier
                                         .width(240.dp)
-                                        .height(74.dp)
+                                        .widthIn(max = 10000.dp)
+                                        .height(80.dp)
                                         .clip(RoundedCornerShape(14.dp))
                                         .background(SlateCard),
                                     contentAlignment = Alignment.Center
@@ -356,13 +376,15 @@ fun TimelineCanvas(
                                 Row(
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .height(78.dp)
+                                        .widthIn(max = 10000.dp)
+                                        .height(80.dp)
                                         .clip(RoundedCornerShape(14.dp))
                                         .padding(vertical = 2.dp),
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     project.videoClips.forEachIndexed { index, clip ->
-                                        val clipWidthDp = (clip.effectiveDurationMs * dpPerMs).dp.coerceAtLeast(64.dp)
+                                        val clipWidthDp = (clip.effectiveDurationMs * dpPerMs).dp
+                                            .coerceIn(64.dp, 10000.dp)
 
                                         VideoTrackClipItem(
                                             clip = clip,
@@ -721,8 +743,8 @@ private fun LazyFilmstripThumbCell(
     }
     Box(
         modifier = Modifier
-            .width(slot.widthDp)
-            .fillMaxHeight()
+            .width(slot.widthDp.coerceIn(1.dp, 10000.dp))
+            .height(80.dp)
             .background(ObsidianBg)
     ) {
         val bmp = bitmap
@@ -775,7 +797,8 @@ private fun VideoTrackClipItem(
 
     Box(
         modifier = Modifier
-            .width(widthDp)
+            .width(widthDp.coerceIn(64.dp, 10000.dp))
+            .widthIn(max = 10000.dp)
             .fillMaxHeight()
             .offset { IntOffset(dragReorderOffsetPx.roundToInt(), 0) }
             .zIndex(if (dragReorderOffsetPx != 0f) 5f else if (isSelected) 3f else 1f)
@@ -943,8 +966,8 @@ private fun AudioTrackClipRow(
 ) {
     val haptic = LocalHapticFeedback.current
     val latestAudio by rememberUpdatedState(audioClip)
-    val startDp = (audioClip.timelineStartMs * dpPerMs).dp
-    val widthDp = (audioClip.effectiveDurationMs * dpPerMs).dp.coerceAtLeast(148.dp)
+    val startDp = (audioClip.timelineStartMs * dpPerMs).dp.coerceIn(0.dp, 9850.dp)
+    val widthDp = (audioClip.effectiveDurationMs * dpPerMs).dp.coerceIn(148.dp, 10000.dp)
 
     val (tint, bg, icon) = when (audioClip.kind) {
         AudioClipKind.GAME -> Triple(ClotchBlue, ClotchBlueMuted, Icons.Filled.SportsEsports)
@@ -1075,8 +1098,8 @@ private fun OverlayTrackClipRow(
 ) {
     val haptic = LocalHapticFeedback.current
     val latest by rememberUpdatedState(overlay)
-    val startDp = (overlay.timelineStartMs * dpPerMs).dp
-    val widthDp = (overlay.durationMs * dpPerMs).dp.coerceAtLeast(80.dp)
+    val startDp = (overlay.timelineStartMs * dpPerMs).dp.coerceIn(0.dp, 9900.dp)
+    val widthDp = (overlay.durationMs * dpPerMs).dp.coerceIn(80.dp, 10000.dp)
     val tint = if (overlay.isCaption) SignalEmerald else ClotchBlue
     val bg = if (overlay.isCaption) SignalEmeraldMuted else ClotchBlueMuted
     val shape = RoundedCornerShape(10.dp)
@@ -1152,11 +1175,12 @@ private fun StickerTrackPill(
     isSelected: Boolean,
     onSelect: () -> Unit
 ) {
-    val widthDp = (sticker.durationMs * dpPerMs).dp.coerceAtLeast(56.dp)
+    val widthDp = (sticker.durationMs * dpPerMs).dp.coerceIn(56.dp, 10000.dp)
     TactileSurface(
         onClick = onSelect,
         modifier = Modifier
             .width(widthDp)
+            .widthIn(max = 10000.dp)
             .height(34.dp)
             .then(
                 if (isSelected) {

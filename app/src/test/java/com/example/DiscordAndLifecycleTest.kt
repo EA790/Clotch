@@ -5,6 +5,7 @@ import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.net.Uri
 import androidx.test.core.app.ApplicationProvider
+import com.example.diagnostics.DiscordLogger
 import com.example.discord.DiscordConnectionState
 import com.example.discord.DiscordOAuthCallbackParser
 import com.example.discord.DiscordOAuthCallbackResult
@@ -12,6 +13,7 @@ import com.example.discord.DiscordPresencePayload
 import com.example.discord.DiscordProfileManager
 import com.example.discord.DiscordRpcClient
 import com.example.recording.RecordingController
+import com.example.ui.components.decodeJsStringResult
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
@@ -177,5 +179,57 @@ class DiscordAndLifecycleTest {
         val scopeErrParsed = DiscordOAuthCallbackParser.parse(scopeErrUri)
         assertTrue(scopeErrParsed is DiscordOAuthCallbackResult.Error)
         assertTrue((scopeErrParsed as DiscordOAuthCallbackResult.Error).message.contains("fallback", ignoreCase = true))
+    }
+
+    @Test
+    fun discordLogger_masksSecretsAndWritesLifecycleLogsWithStackTraces() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        DiscordLogger.install(context)
+
+        val rawToken = "MTIzNDU2Nzg5MDEyMzQ1Njc4.SECRET_MIDDLE_PART.TAIL_SIGNATURE"
+        val masked = DiscordLogger.maskToken(rawToken)
+        assertTrue(masked.startsWith("MTIzN***"))
+        assertFalse(masked.contains("SECRET_MIDDLE_PART"))
+        assertFalse(masked.contains("TAIL_SIGNATURE"))
+
+        val maskedUri = DiscordLogger.maskUriSecrets(
+            "clotch://discord-callback#access_token=$rawToken&token_type=Bearer"
+        )
+        assertFalse(maskedUri.contains("SECRET_MIDDLE_PART"))
+        assertTrue(maskedUri.contains("MTIzN***"))
+
+        assertEquals("Documents/Clotch-Log/discord_log.txt", DiscordLogger.getLogDisplayPath())
+
+        DiscordLogger.logOAuthUrlGenerated("https://discord.com/oauth2/authorize?client_id=123456")
+        DiscordLogger.logOAuthBrowserOpened("https://discord.com/oauth2/authorize?client_id=123456")
+        DiscordLogger.logDeepLinkReceived("clotch://discord-callback#access_token=$rawToken", "Token parsed")
+        DiscordLogger.logTokenExtracted("WebView localStorage", rawToken)
+        DiscordLogger.logRpcAttempt(rawToken, "UnitTestConnect")
+        DiscordLogger.logRpcState("Connecting", "Opening socket")
+        DiscordLogger.logRpcState("Error", "Simulated gateway failure", IllegalStateException("Gateway 4004"))
+        DiscordLogger.logRpcState("Disconnected", "Closed cleanly")
+
+        val logText = DiscordLogger.readRecentDiscordLogs(context)
+        assertTrue(logText.contains("OAUTH_URL_GENERATED"))
+        assertTrue(logText.contains("OAUTH_BROWSER_OPENED"))
+        assertTrue(logText.contains("DEEP_LINK_RECEIVED"))
+        assertTrue(logText.contains("TOKEN_EXTRACTED"))
+        assertTrue(logText.contains("KIZZY_RPC_CONNECT_ATTEMPT"))
+        assertTrue(logText.contains("Connecting"))
+        assertTrue(logText.contains("IllegalStateException: Gateway 4004"))
+        assertTrue(logText.contains("Disconnected"))
+        assertFalse(logText.contains("SECRET_MIDDLE_PART"))
+    }
+
+    @Test
+    fun decodeJsStringResult_parsesQuotedTokensAndRejectsEmpty() {
+        assertEquals(
+            "MTIzNDU2Nzg5.abc.xyz",
+            decodeJsStringResult("\"\\\"MTIzNDU2Nzg5.abc.xyz\\\"\"").removeSurrounding("\"")
+        )
+        assertEquals("MTIzNDU2Nzg5.abc.xyz", decodeJsStringResult("\"MTIzNDU2Nzg5.abc.xyz\""))
+        assertEquals("", decodeJsStringResult("null"))
+        assertEquals("", decodeJsStringResult("\"\""))
+        assertEquals("", decodeJsStringResult(null))
     }
 }

@@ -14,6 +14,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import com.example.diagnostics.CrashLogger
+import com.example.diagnostics.DiscordLogger
 import com.example.discord.DiscordOAuthCallbackParser
 import com.example.discord.DiscordOAuthCallbackResult
 import com.example.recording.RecordingController
@@ -58,13 +59,26 @@ class MainActivity : ComponentActivity() {
                 return
             }
 
-            when (val parsed = DiscordOAuthCallbackParser.parse(intent?.data)) {
+            val dataUri = intent?.data
+            if (dataUri != null &&
+                dataUri.scheme.equals("clotch", ignoreCase = true) &&
+                dataUri.host.equals("discord-callback", ignoreCase = true)
+            ) {
+                DiscordLogger.logDeepLinkReceived(
+                    rawUri = dataUri.toString(),
+                    summary = "Received deep link clotch://discord-callback in MainActivity"
+                )
+            }
+
+            when (val parsed = DiscordOAuthCallbackParser.parse(dataUri)) {
                 is DiscordOAuthCallbackResult.NotOAuthCallback -> Unit
                 is DiscordOAuthCallbackResult.Token -> {
+                    DiscordLogger.logTokenExtracted("clotch://discord-callback", parsed.accessToken)
                     oauthAccessToken = parsed.accessToken
                     intent?.data = null
                 }
                 is DiscordOAuthCallbackResult.Error -> {
+                    DiscordLogger.logRpcState("OAuth2 Callback Error", parsed.message)
                     Toast.makeText(
                         applicationContext,
                         parsed.message,
@@ -75,6 +89,7 @@ class MainActivity : ComponentActivity() {
             }
         } catch (t: Throwable) {
             CrashLogger.logError("MainActivity.handleIncomingIntent", "Failed processing deep-link intent", t)
+            DiscordLogger.logRpcState("Error", "Deep-link processing failed in MainActivity", t)
             Toast.makeText(applicationContext, "Unable to process callback URI", Toast.LENGTH_SHORT).show()
         }
     }

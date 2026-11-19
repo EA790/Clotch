@@ -22,7 +22,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.OpenInBrowser
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Visibility
@@ -34,8 +33,6 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Switch
-import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -54,10 +51,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
@@ -67,7 +62,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import coil.compose.AsyncImage
 import com.example.R
-import com.example.discord.DiscordProfileManager
 import com.example.discord.DiscordUserProfile
 import com.example.ui.theme.CarbonSurface
 import com.example.ui.theme.ClotchBlue
@@ -366,17 +360,14 @@ fun DiscordSignInDisclaimerBanner(
 @Composable
 fun DiscordSignInDialog(
     initialToken: String,
-    initialClientId: String,
     isLoading: Boolean,
     onDismiss: () -> Unit,
     onSignInWithToken: (String) -> Unit,
-    onLaunchOAuthBrowser: (String, Boolean) -> Unit
+    onOpenWebViewLogin: () -> Unit
 ) {
     var selectedTab by remember { mutableIntStateOf(0) }
     var tokenInput by remember(initialToken) { mutableStateOf(initialToken) }
-    var clientIdInput by remember(initialClientId) { mutableStateOf(initialClientId) }
     var showToken by remember { mutableStateOf(false) }
-    var useIdentifyFallback by remember { mutableStateOf(false) }
 
     Dialog(onDismissRequest = onDismiss) {
         Surface(
@@ -414,11 +405,14 @@ fun DiscordSignInDialog(
                             .padding(4.dp),
                         horizontalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
-                        listOf("Token + RPC", "OAuth2 Browser").forEachIndexed { idx, label ->
+                        listOf("Discord Login", "Manual Token").forEachIndexed { idx, label ->
                             val selected = selectedTab == idx
                             TactileSurface(
                                 onClick = { selectedTab = idx },
-                                modifier = Modifier.weight(1f),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .defaultMinSize(minHeight = 48.dp)
+                                    .testTag(if (idx == 0) "discord_tab_webview" else "discord_tab_manual"),
                                 color = if (selected) ElevatedSlate else Color.Transparent,
                                 shape = ClotchPillShape,
                                 pressedScale = 0.96f
@@ -439,6 +433,33 @@ fun DiscordSignInDialog(
                 }
 
                 if (selectedTab == 0) {
+                    Text(
+                        text = "Opens https://discord.com/login in a secure in-app WebView, extracts your Discord session token automatically, and connects KizzyRPC.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = TextSecondary
+                    )
+                    Surface(
+                        color = CarbonSurface,
+                        shape = RoundedCornerShape(14.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(14.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Text(
+                                text = "WEBVIEW TOKEN SYNC",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = ClotchBlue
+                            )
+                            Text(
+                                text = "Sign in with your Discord credentials or 2FA. Clotch detects localStorage.getItem('token') and enables Rich Presence immediately.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = TextSecondary
+                            )
+                        }
+                    }
+                } else {
                     Text(
                         text = "Signs in via Discord API (/users/@me) to load your username, avatar, and bio, and enables live Rich Presence.",
                         style = MaterialTheme.typography.bodySmall,
@@ -470,111 +491,6 @@ fun DiscordSignInDialog(
                         shape = ClotchInputShape,
                         colors = clotchTonalFieldColors(accentColor = DiscordBlurple)
                     )
-                } else {
-                    val clipboardManager = LocalClipboardManager.current
-                    var copiedRedirect by remember { mutableStateOf(false) }
-                    Text(
-                        text = "Implicit OAuth2 (response_type=token). Register this Redirect URI in Discord Developer Portal -> OAuth2 -> Redirects:",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = TextSecondary
-                    )
-                    Surface(
-                        color = CarbonSurface,
-                        shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 12.dp, vertical = 8.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Text(
-                                text = DiscordProfileManager.OAUTH_REDIRECT_URI,
-                                style = MaterialTheme.typography.labelMedium,
-                                color = ClotchBlue,
-                                modifier = Modifier.weight(1f),
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                            TextButton(
-                                onClick = {
-                                    clipboardManager.setText(AnnotatedString(DiscordProfileManager.OAUTH_REDIRECT_URI))
-                                    copiedRedirect = true
-                                },
-                                modifier = Modifier.testTag("copy_oauth_redirect_button")
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Filled.ContentCopy,
-                                    contentDescription = "Copy redirect URI",
-                                    tint = ClotchBlue,
-                                    modifier = Modifier.size(14.dp)
-                                )
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text(
-                                    text = if (copiedRedirect) "Copied" else "Copy",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = ClotchBlue
-                                )
-                            }
-                        }
-                    }
-                    OutlinedTextField(
-                        value = clientIdInput,
-                        onValueChange = { clientIdInput = it },
-                        label = { Text("Discord App Client ID") },
-                        placeholder = { Text("e.g. 123456789012345678") },
-                        singleLine = true,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .testTag("dialog_oauth_client_id_input"),
-                        shape = ClotchInputShape,
-                        colors = clotchTonalFieldColors(accentColor = ClotchBlue)
-                    )
-                    Surface(
-                        color = CarbonSurface,
-                        shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .defaultMinSize(minHeight = 48.dp)
-                            .clip(RoundedCornerShape(12.dp))
-                            .clickable { useIdentifyFallback = !useIdentifyFallback }
-                            .testTag("oauth_identify_fallback_toggle")
-                    ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 12.dp, vertical = 8.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
-                                Text(
-                                    text = "Fallback to 'identify' scope only",
-                                    style = MaterialTheme.typography.labelMedium,
-                                    color = TextPrimary
-                                )
-                                Text(
-                                    text = if (useIdentifyFallback) {
-                                        "Scope: identify (safe if Discord rejects rpc)"
-                                    } else {
-                                        "Default scope: identify rpc"
-                                    },
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = TextSecondary
-                                )
-                            }
-                            Switch(
-                                checked = useIdentifyFallback,
-                                onCheckedChange = { useIdentifyFallback = it },
-                                colors = SwitchDefaults.colors(
-                                    checkedThumbColor = TextPrimary,
-                                    checkedTrackColor = ClotchBlue
-                                )
-                            )
-                        }
-                    }
                 }
 
                 Row(
@@ -582,15 +498,38 @@ fun DiscordSignInDialog(
                     horizontalArrangement = Arrangement.End,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    TextButton(onClick = onDismiss) {
+                    TextButton(
+                        onClick = onDismiss,
+                        modifier = Modifier.defaultMinSize(minHeight = 48.dp)
+                    ) {
                         Text("Cancel", color = TextSecondary)
                     }
                     Spacer(modifier = Modifier.width(8.dp))
                     if (selectedTab == 0) {
                         TactilePillButton(
+                            onClick = onOpenWebViewLogin,
+                            enabled = !isLoading,
+                            modifier = Modifier
+                                .defaultMinSize(minHeight = 48.dp)
+                                .testTag("dialog_discord_webview_button"),
+                            containerColor = DiscordBlurple,
+                            contentColor = TextPrimary
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.OpenInBrowser,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Sign In via WebView")
+                        }
+                    } else {
+                        TactilePillButton(
                             onClick = { onSignInWithToken(tokenInput) },
                             enabled = !isLoading && tokenInput.isNotBlank(),
-                            modifier = Modifier.testTag("dialog_discord_sign_in_button"),
+                            modifier = Modifier
+                                .defaultMinSize(minHeight = 48.dp)
+                                .testTag("dialog_discord_sign_in_button"),
                             containerColor = DiscordBlurple,
                             contentColor = TextPrimary
                         ) {
@@ -603,22 +542,6 @@ fun DiscordSignInDialog(
                             } else {
                                 Text("Sign In & Sync")
                             }
-                        }
-                    } else {
-                        TactilePillButton(
-                            onClick = { onLaunchOAuthBrowser(clientIdInput, useIdentifyFallback) },
-                            enabled = clientIdInput.isNotBlank(),
-                            modifier = Modifier.testTag("dialog_discord_oauth_button"),
-                            containerColor = ClotchBlue,
-                            contentColor = TextPrimary
-                        ) {
-                            Icon(
-                                imageVector = Icons.Filled.OpenInBrowser,
-                                contentDescription = null,
-                                modifier = Modifier.size(16.dp)
-                            )
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("Open Discord")
                         }
                     }
                 }

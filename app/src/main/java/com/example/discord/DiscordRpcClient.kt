@@ -10,6 +10,7 @@ import android.os.Handler
 import android.os.Looper
 import android.widget.Toast
 import com.example.diagnostics.CrashLogger
+import com.example.diagnostics.DiscordLogger
 import com.my.kizzyrpc.KizzyRPC
 import com.my.kizzyrpc.model.Activity
 import com.my.kizzyrpc.model.Assets
@@ -102,11 +103,14 @@ class DiscordRpcClient(private val context: Context) {
                     rpcMutex.withLock {
                         closeSocketLocked()
                         if (desiredRpcEnabled && desiredToken.isNotBlank() && !manuallyDisconnected) {
+                            val errMsg = "Discord RPC waiting for internet connection"
+                            DiscordLogger.logRpcState("Error", "$errMsg (network lost)")
                             _connectionState.value = DiscordConnectionState.Error(
-                                message = "Discord RPC waiting for internet connection",
+                                message = errMsg,
                                 isAuthError = false
                             )
                         } else {
+                            DiscordLogger.logRpcState("Disconnected", "Network lost while idle/disabled")
                             _connectionState.value = DiscordConnectionState.Disconnected
                         }
                     }
@@ -116,6 +120,7 @@ class DiscordRpcClient(private val context: Context) {
     }
 
     init {
+        DiscordLogger.install(appContext)
         registerNetworkCallback()
     }
 
@@ -127,6 +132,8 @@ class DiscordRpcClient(private val context: Context) {
         manuallyDisconnected = false
         isAuthRejected = false
 
+        DiscordLogger.logRpcAttempt(cleanToken, "connect(showSuccessToast=$showSuccessToast)")
+
         if (!DiscordProfileManager.isHeaderSafeToken(cleanToken)) {
             val msg = if (cleanToken.isEmpty()) {
                 "Discord RPC unavailable: Add your Discord token in Settings or Sign In"
@@ -134,6 +141,7 @@ class DiscordRpcClient(private val context: Context) {
                 "Discord token invalid: Remove spaces or unsupported characters"
             }
             isAuthRejected = cleanToken.isNotEmpty()
+            DiscordLogger.logRpcState("Error", "Validation failed before connect: $msg (isAuthError=true)")
             _connectionState.value = DiscordConnectionState.Error(msg, isAuthError = true)
             showToast(msg)
             return
@@ -141,6 +149,7 @@ class DiscordRpcClient(private val context: Context) {
 
         if (!isNetworkAvailable()) {
             val msg = "Discord RPC waiting for internet connection"
+            DiscordLogger.logRpcState("Error", "$msg (no active internet capability)")
             _connectionState.value = DiscordConnectionState.Error(msg, isAuthError = false)
             showToast(msg)
             return
@@ -162,6 +171,7 @@ class DiscordRpcClient(private val context: Context) {
         if (clearPresence) {
             _currentPresence.value = null
         }
+        DiscordLogger.logRpcState("Disconnected", "Manual disconnect requested (clearPresence=$clearPresence)")
         if (released.get()) return
         scope.launch {
             rpcMutex.withLock {
@@ -188,6 +198,9 @@ class DiscordRpcClient(private val context: Context) {
         if (!rpcEnabled) {
             scope.launch {
                 rpcMutex.withLock {
+                    if (_connectionState.value !is DiscordConnectionState.Disconnected) {
+                        DiscordLogger.logRpcState("Disconnected", "Discord RPC toggled off")
+                    }
                     closeSocketLocked()
                     _connectionState.value = DiscordConnectionState.Disconnected
                 }
@@ -207,6 +220,7 @@ class DiscordRpcClient(private val context: Context) {
                 } else {
                     "Discord token invalid: Remove spaces or unsupported characters"
                 }
+                DiscordLogger.logRpcState("Error", "UpdatePresence validation failed: $msg (token=${DiscordLogger.maskToken(cleanToken)})")
                 _connectionState.value = DiscordConnectionState.Error(msg, isAuthError = true)
                 showRateLimitedToast(msg)
             } else {
@@ -226,6 +240,7 @@ class DiscordRpcClient(private val context: Context) {
 
         if (!isNetworkAvailable()) {
             val msg = "Discord RPC waiting for internet connection"
+            DiscordLogger.logRpcState("Error", "$msg during updatePresence")
             _connectionState.value = DiscordConnectionState.Error(msg, isAuthError = false)
             showRateLimitedToast(msg)
             return
@@ -234,9 +249,16 @@ class DiscordRpcClient(private val context: Context) {
         scope.launch {
             rpcMutex.withLock {
                 if (payload == null) {
+                    if (_connectionState.value !is DiscordConnectionState.Disconnected) {
+                        DiscordLogger.logRpcState("Disconnected", "Presence payload cleared")
+                    }
                     closeSocketLocked()
                     _connectionState.value = DiscordConnectionState.Disconnected
                 } else {
+                    DiscordLogger.logRpcAttempt(
+                        cleanToken,
+                        "updatePresence(game=${payload.effectiveGameTitle()}, recording=${payload.isRecording})"
+                    )
                     connectAndPushLocked(
                         token = cleanToken,
                         payload = payload,
@@ -254,6 +276,9 @@ class DiscordRpcClient(private val context: Context) {
         runCatching { kizzyRpc?.closeRPC() }
         kizzyRpc = null
         activeToken = ""
+        if (_connectionState.value !is DiscordConnectionState.Disconnected) {
+            DiscordLogger.logRpcState("Disconnected", "DiscordRpcClient released")
+        }
         _connectionState.value = DiscordConnectionState.Disconnected
         scope.cancel()
     }
@@ -296,6 +321,10 @@ class DiscordRpcClient(private val context: Context) {
         try {
             if (kizzyRpc == null || activeToken != token) {
                 runCatching { kizzyRpc?.closeRPC() }
+                DiscordLogger.logRpcState(
+                    "Connecting",
+                    "Opening KizzyRPC session (token=${DiscordLogger.maskToken(token)}, appId=$CLOTCH_DISCORD_APP_ID)"
+                )
                 _connectionState.value = DiscordConnectionState.Connecting
                 kizzyRpc = KizzyRPC(token)
                 activeToken = token
@@ -336,9 +365,14 @@ class DiscordRpcClient(private val context: Context) {
             )
 
             isAuthRejected = false
+            val statusSummary = effectivePayload.formatStatusText()
+            DiscordLogger.logRpcState(
+                "Connected",
+                "KizzyRPC active | activity=${effectivePayload.activityName()} | status=$statusSummary"
+            )
             _connectionState.value = DiscordConnectionState.Connected(
                 username = "Discord RPC Active",
-                activeStatusText = effectivePayload.formatStatusText()
+                activeStatusText = statusSummary
             )
             if (showSuccessToast) {
                 showToast("Kizzy Discord RPC connected")
@@ -361,6 +395,11 @@ class DiscordRpcClient(private val context: Context) {
             } else {
                 "Discord RPC error: $detail"
             }
+            DiscordLogger.logRpcState(
+                "Error",
+                "KizzyRPC failed (authFailure=$authFailure, token=${DiscordLogger.maskToken(token)}): $msg",
+                t
+            )
             _connectionState.value = DiscordConnectionState.Error(msg, isAuthError = authFailure)
             showRateLimitedToast(msg)
         }

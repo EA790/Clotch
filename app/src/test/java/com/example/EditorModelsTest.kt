@@ -3,6 +3,9 @@ package com.example
 import android.content.ComponentCallbacks2
 import android.content.Context
 import android.net.Uri
+import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onNodeWithTag
 import androidx.test.core.app.ApplicationProvider
 import com.example.data.AudioCaptureSource
 import com.example.data.ClotchSettings
@@ -29,12 +32,16 @@ import com.example.editor.model.TimelineVideoClip
 import com.example.editor.model.TransitionSpec
 import com.example.editor.model.TransitionType
 import com.example.editor.model.UpscaleTarget
+import com.example.ui.editor.TimelineCanvas
+import com.example.ui.theme.ClotchTheme
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -43,6 +50,9 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
 class EditorModelsTest {
+
+    @get:Rule
+    val composeTestRule = createComposeRule()
 
     @Test
     fun timelineVideoWindows_computeContiguousStartsAndEnds() {
@@ -366,5 +376,57 @@ class EditorModelsTest {
         )
         assertFalse(info.probeSucceeded)
         assertEquals("nonexistent_clotch_test_video.mp4", info.displayName)
+    }
+
+    @Test
+    fun timelineCanvas_rendersLong60MinuteVideoWithoutWidthOverflowCrash() {
+        val thumbCache = EditorThumbnailCache()
+        val longClip = TimelineVideoClip(
+            id = "long_60min",
+            sourceUri = Uri.parse("file:///tmp/long_60min.mp4"),
+            displayName = "Long Recording",
+            sourceDurationMs = 3_600_000L,
+            trimStartMs = 0L,
+            trimEndMs = 3_600_000L
+        )
+        val micClip = TimelineAudioClip(
+            id = "long_mic",
+            sourceUri = Uri.parse("file:///tmp/long_mic.m4a"),
+            displayName = "Microphone",
+            kind = AudioClipKind.MIC,
+            timelineStartMs = 0L,
+            sourceDurationMs = 3_600_000L
+        )
+        val project = EditorProject(
+            videoClips = listOf(longClip),
+            audioClips = listOf(micClip),
+            zoomLevel = 2.5f
+        )
+        val playheadFlow = MutableStateFlow(600_000L)
+
+        try {
+            composeTestRule.setContent {
+                ClotchTheme {
+                    TimelineCanvas(
+                        project = project,
+                        playheadMsFlow = playheadFlow,
+                        thumbnailCache = thumbCache,
+                        isPlaying = false,
+                        onSeekTo = {},
+                        onSelectVideoClip = {},
+                        onSelectAudioClip = {},
+                        onBeginContinuousEdit = {},
+                        onCommitContinuousEdit = {},
+                        onTrimVideoClip = { _, _, _ -> },
+                        onMoveVideoClip = { _, _ -> },
+                        onMoveAudioClipStart = { _, _ -> }
+                    )
+                }
+            }
+            composeTestRule.onNodeWithTag("timeline_canvas").assertIsDisplayed()
+            composeTestRule.onNodeWithTag("timeline_video_clip_long_60min").assertIsDisplayed()
+        } finally {
+            thumbCache.release()
+        }
     }
 }

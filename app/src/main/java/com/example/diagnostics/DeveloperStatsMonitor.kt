@@ -167,10 +167,11 @@ object DeveloperStatsMonitor {
             val latest = sampleSnapshot(appCtx)
             val history = getHistorySnapshot()
             val crashLogs = CrashLogger.readRecentCrashLogs(maxChars = 24_000)
+            val discordLogs = DiscordLogger.readRecentDiscordLogs(appCtx, maxChars = 16_000)
 
             val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date(latest.capturedAtMs))
             val fileName = "clotch_stats_$timestamp.txt"
-            val reportText = buildDumpReport(latest, history, crashLogs)
+            val reportText = buildDumpReport(latest, history, crashLogs, discordLogs)
             CrashLogger.writeReportToClotchLog(appCtx, fileName, reportText)
         }
     }
@@ -178,7 +179,8 @@ object DeveloperStatsMonitor {
     internal fun buildDumpReport(
         latest: DeveloperTelemetrySnapshot,
         history: List<DeveloperTelemetrySnapshot>,
-        recentCrashLogs: String
+        recentCrashLogs: String,
+        recentDiscordLogs: String = ""
     ): String {
         val timeFmt = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS Z", Locale.US)
         val shortTimeFmt = SimpleDateFormat("HH:mm:ss", Locale.US)
@@ -227,6 +229,11 @@ object DeveloperStatsMonitor {
             appendLine()
             appendLine("--- LATEST CRASH LOGS ---")
             appendLine(recentCrashLogs)
+            if (recentDiscordLogs.isNotBlank()) {
+                appendLine()
+                appendLine("--- LATEST DISCORD & KIZZYRPC LOGS ---")
+                appendLine(recentDiscordLogs)
+            }
         }
     }
 

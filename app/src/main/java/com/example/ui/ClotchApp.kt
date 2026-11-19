@@ -103,6 +103,7 @@ import com.example.data.RecordingMode
 import com.example.editor.EditorViewModel
 import com.example.recording.RecorderState
 import com.example.ui.components.DiscordSignInDialog
+import com.example.ui.components.DiscordWebViewLoginDialog
 import com.example.ui.components.TactileIconButton
 import com.example.ui.components.TactileSurface
 import com.example.ui.editor.EditorScreen
@@ -164,10 +165,9 @@ fun ClotchApp(
     val discordProfile by viewModel.discordProfile.collectAsStateWithLifecycle()
     val detectedApps by viewModel.detectedApps.collectAsStateWithLifecycle()
     val hasUsageStatsPermission by viewModel.hasUsageStatsPermission.collectAsStateWithLifecycle()
-    val oauthClientId by viewModel.oauthClientId.collectAsStateWithLifecycle()
     val isFetchingProfile by viewModel.isFetchingProfile.collectAsStateWithLifecycle()
-
     var showSignInDialog by remember { mutableStateOf(false) }
+    var showWebViewLoginDialog by remember { mutableStateOf(false) }
     var pendingCaptureAfterPermission by remember { mutableStateOf(false) }
 
     val projectionLauncher = rememberLauncherForActivityResult(
@@ -728,7 +728,6 @@ fun ClotchApp(
     if (showSignInDialog) {
         DiscordSignInDialog(
             initialToken = settings.discordToken,
-            initialClientId = oauthClientId,
             isLoading = isFetchingProfile,
             onDismiss = { showSignInDialog = false },
             onSignInWithToken = { token ->
@@ -736,29 +735,19 @@ fun ClotchApp(
                     if (success) showSignInDialog = false
                 }
             },
-            onLaunchOAuthBrowser = { clientId, useIdentifyFallback ->
-                val url = viewModel.buildOAuthUrlAndSaveClientId(clientId, useIdentifyFallback)
-                if (url != null) {
-                    android.util.Log.d("DiscordOAuth", "Generated URL: $url")
-                    runCatching {
-                        val customTabExtras = android.os.Bundle().apply {
-                            putBinder("android.support.customtabs.extra.SESSION", null)
-                            putInt("android.support.customtabs.extra.TOOLBAR_COLOR", 0xFF0A0E17.toInt())
-                        }
-                        val oauthIntent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
-                            putExtras(customTabExtras)
-                            addFlags(Intent.FLAG_ACTIVITY_NO_HISTORY)
-                        }
-                        context.startActivity(oauthIntent)
-                    }.onFailure { t ->
-                        com.example.diagnostics.CrashLogger.logError(
-                            "DiscordOAuth",
-                            "Failed launching OAuth browser URL=$url",
-                            t
-                        )
-                        viewModel.showToast("Unable to open browser for Discord OAuth2")
-                    }
-                }
+            onOpenWebViewLogin = {
+                showSignInDialog = false
+                showWebViewLoginDialog = true
+            }
+        )
+    }
+
+    if (showWebViewLoginDialog) {
+        DiscordWebViewLoginDialog(
+            onDismiss = { showWebViewLoginDialog = false },
+            onTokenExtracted = { token ->
+                showWebViewLoginDialog = false
+                viewModel.signInWithWebViewToken(token)
             }
         )
     }

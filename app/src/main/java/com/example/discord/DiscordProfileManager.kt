@@ -12,6 +12,7 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.example.diagnostics.CrashLogger
+import com.example.diagnostics.DiscordLogger
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
@@ -121,7 +122,7 @@ class DiscordProfileManager(private val context: Context) {
             useIdentifyFallback: Boolean = false
         ): String {
             val scope = if (useIdentifyFallback) OAUTH_SCOPE_IDENTIFY_ONLY else OAUTH_SCOPE_DEFAULT
-            return Uri.Builder()
+            val url = Uri.Builder()
                 .scheme("https")
                 .authority("discord.com")
                 .appendPath("oauth2")
@@ -132,6 +133,8 @@ class DiscordProfileManager(private val context: Context) {
                 .appendQueryParameter("scope", scope)
                 .build()
                 .toString()
+            DiscordLogger.logOAuthUrlGenerated(url)
+            return url
         }
 
         fun sanitizeToken(rawToken: String): String {
@@ -199,12 +202,19 @@ class DiscordProfileManager(private val context: Context) {
         rawToken: String,
         isBearerOAuth: Boolean
     ): Result<DiscordUserProfile> = withContext(Dispatchers.IO) {
+        DiscordLogger.install(context)
         val cleanToken = sanitizeToken(rawToken)
         if (!isHeaderSafeToken(cleanToken)) {
             val err = IllegalArgumentException("Invalid Discord token format (remove spaces or special characters)")
+            DiscordLogger.logRpcState("Error", "Profile fetch rejected invalid token (${DiscordLogger.maskToken(cleanToken)})", err)
             showToast(err.message!!)
             return@withContext Result.failure(err)
         }
+
+        DiscordLogger.logEvent(
+            "DISCORD_PROFILE_FETCH",
+            "Fetching /users/@me (isBearerOAuth=$isBearerOAuth, token=${DiscordLogger.maskToken(cleanToken)})"
+        )
 
         try {
             val authHeader = if (isBearerOAuth) "Bearer $cleanToken" else cleanToken
@@ -223,6 +233,11 @@ class DiscordProfileManager(private val context: Context) {
                         429 -> "Discord rate-limited request. Try again shortly."
                         else -> "Discord sign-in failed (HTTP ${response.code})"
                     }
+                    DiscordLogger.logEvent(
+                        "DISCORD_PROFILE_FETCH",
+                        "HTTP ${response.code} for token=${DiscordLogger.maskToken(cleanToken)}: $msg",
+                        isError = true
+                    )
                     showToast(msg)
                     return@withContext Result.failure(IllegalStateException(msg))
                 }
@@ -281,6 +296,10 @@ class DiscordProfileManager(private val context: Context) {
                     prefs[Keys.IS_BEARER] = profile.isBearerOAuth
                 }
 
+                DiscordLogger.logEvent(
+                    "DISCORD_PROFILE_FETCH",
+                    "Profile loaded for @${profile.username} (id=${profile.id}, isBearerOAuth=$isBearerOAuth)"
+                )
                 showToast("Signed in to Discord as ${profile.displayTitle}")
                 Result.success(profile)
             }
@@ -288,6 +307,7 @@ class DiscordProfileManager(private val context: Context) {
             throw ce
         } catch (t: Throwable) {
             CrashLogger.logError("DiscordProfileManager", "Discord sign-in failed", t)
+            DiscordLogger.logRpcState("Error", "Profile fetch exception: ${t.localizedMessage}", t)
             val msg = "Discord sign-in error: ${t.localizedMessage ?: "Network unavailable"}"
             showToast(msg)
             Result.failure(t)

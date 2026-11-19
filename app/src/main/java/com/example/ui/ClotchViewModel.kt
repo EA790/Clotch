@@ -16,6 +16,7 @@ import com.example.data.RecordedClip
 import com.example.data.RecordingMode
 import com.example.data.VideoFormat
 import com.example.data.VideoResolution
+import com.example.diagnostics.DiscordLogger
 import com.example.discord.DetectedAppsResult
 import com.example.discord.DiscordConnectionState
 import com.example.discord.DiscordPresencePayload
@@ -225,9 +226,10 @@ class ClotchViewModel(application: Application) : AndroidViewModel(application) 
         viewModelScope.launch {
             _isFetchingProfile.value = true
             try {
+                DiscordLogger.logTokenExtracted("Manual Token Input", token)
                 val result = profileManager.fetchAndSaveProfile(token, isBearerOAuth = false)
+                val clean = DiscordProfileManager.sanitizeToken(token)
                 if (result.isSuccess) {
-                    val clean = DiscordProfileManager.sanitizeToken(token)
                     settingsRepo.setDiscordToken(clean)
                     controller.connectDiscordRpc(clean)
                     onComplete(true)
@@ -235,7 +237,28 @@ class ClotchViewModel(application: Application) : AndroidViewModel(application) 
                     onComplete(false)
                 }
             } catch (t: Throwable) {
+                DiscordLogger.logRpcState("Error", "signInWithDiscordToken failed", t)
                 showToast("Discord sign-in failed: ${t.localizedMessage ?: "Unknown error"}")
+                onComplete(false)
+            } finally {
+                _isFetchingProfile.value = false
+            }
+        }
+    }
+
+    fun signInWithWebViewToken(token: String, onComplete: (Boolean) -> Unit = {}) {
+        viewModelScope.launch {
+            _isFetchingProfile.value = true
+            try {
+                val clean = DiscordProfileManager.sanitizeToken(token)
+                DiscordLogger.logTokenExtracted("WebView Sync -> KizzyRPC", clean)
+                settingsRepo.setDiscordToken(clean)
+                controller.connectDiscordRpc(clean)
+                val result = profileManager.fetchAndSaveProfile(clean, isBearerOAuth = false)
+                onComplete(result.isSuccess || clean.isNotBlank())
+            } catch (t: Throwable) {
+                DiscordLogger.logRpcState("Error", "signInWithWebViewToken failed", t)
+                showToast("Discord WebView sign-in failed: ${t.localizedMessage ?: "Unknown error"}")
                 onComplete(false)
             } finally {
                 _isFetchingProfile.value = false
@@ -263,6 +286,7 @@ class ClotchViewModel(application: Application) : AndroidViewModel(application) 
             _isFetchingProfile.value = true
             try {
                 val cleanToken = DiscordProfileManager.sanitizeToken(accessToken)
+                DiscordLogger.logTokenExtracted("OAuth2 Access Token", cleanToken)
                 val result = profileManager.fetchAndSaveProfile(cleanToken, isBearerOAuth = true)
                 if (cleanToken.isNotBlank()) {
                     settingsRepo.setDiscordToken(cleanToken)
@@ -272,6 +296,7 @@ class ClotchViewModel(application: Application) : AndroidViewModel(application) 
                     showToast("OAuth2 callback returned an empty token")
                 }
             } catch (t: Throwable) {
+                DiscordLogger.logRpcState("Error", "handleOAuthAccessToken failed", t)
                 showToast("OAuth2 sign-in failed: ${t.localizedMessage ?: "Unknown error"}")
             } finally {
                 _isFetchingProfile.value = false
