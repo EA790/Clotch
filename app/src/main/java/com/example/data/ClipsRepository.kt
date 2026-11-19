@@ -123,8 +123,9 @@ class ClipsRepository(private val context: Context) {
             var durationMs = 0L
             var width = 0
             var height = 0
-            val retriever = MediaMetadataRetriever()
+            var retriever: MediaMetadataRetriever? = null
             try {
+                retriever = MediaMetadataRetriever()
                 retriever.setDataSource(file.absolutePath)
                 durationMs = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
                     ?.toLongOrNull() ?: 0L
@@ -132,9 +133,10 @@ class ClipsRepository(private val context: Context) {
                     ?.toIntOrNull() ?: 0
                 height = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)
                     ?.toIntOrNull() ?: 0
-            } catch (_: Throwable) {
+            } catch (t: Throwable) {
+                com.example.diagnostics.CrashLogger.logError("ClipsRepository", "Failed reading metadata for ${file.name}", t)
             } finally {
-                runCatching { retriever.release() }
+                runCatching { retriever?.release() }
             }
             val uri = FileProvider.getUriForFile(
                 context,
@@ -248,14 +250,16 @@ class ClipsRepository(private val context: Context) {
         for (file in files) {
             val kind = CompanionTrackMatcher.classifyCompanionAudio(file.name, stem) ?: continue
             var durMs = 0L
-            val retriever = MediaMetadataRetriever()
+            var retriever: MediaMetadataRetriever? = null
             try {
+                retriever = MediaMetadataRetriever()
                 retriever.setDataSource(file.absolutePath)
                 durMs = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
                     ?.toLongOrNull() ?: 0L
-            } catch (_: Throwable) {
+            } catch (t: Throwable) {
+                com.example.diagnostics.CrashLogger.logError("ClipsRepository.Audio", "Failed reading audio metadata for ${file.name}", t)
             } finally {
-                runCatching { retriever.release() }
+                runCatching { retriever?.release() }
             }
             found.add(
                 CompanionAudioTrack(

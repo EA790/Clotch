@@ -32,7 +32,8 @@ data class ProbedMediaInfo(
     val width: Int,
     val height: Int,
     val hasAudio: Boolean,
-    val displayName: String
+    val displayName: String,
+    val probeSucceeded: Boolean = true
 )
 
 sealed interface ExtractAudioResult {
@@ -65,8 +66,9 @@ object FFmpegEditorEngine {
             var height = 1080
             var hasAudio = false
 
-            val retriever = MediaMetadataRetriever()
+            var retriever: MediaMetadataRetriever? = null
             try {
+                retriever = MediaMetadataRetriever()
                 var pfdOpened = false
                 if (uri.scheme.equals("content", ignoreCase = true)) {
                     context.contentResolver.openFileDescriptor(uri, "r")?.use { pfd ->
@@ -99,13 +101,14 @@ object FFmpegEditorEngine {
             } catch (t: Throwable) {
                 CrashLogger.logError("FFmpegEditorEngine.probeMedia", "Retriever probe failed for $uri", t)
             } finally {
-                runCatching { retriever.release() }
+                runCatching { retriever?.release() }
             }
 
             // Fast header-only MediaExtractor probe (zero file copy!) before falling back to FFprobeKit
             if (durationMs <= 0L || !hasAudio) {
-                val extractor = android.media.MediaExtractor()
+                var extractor: android.media.MediaExtractor? = null
                 try {
+                    extractor = android.media.MediaExtractor()
                     extractor.setDataSource(context, uri, null)
                     for (i in 0 until extractor.trackCount) {
                         val fmt = extractor.getTrackFormat(i)
@@ -129,9 +132,10 @@ object FFmpegEditorEngine {
                             hasAudio = true
                         }
                     }
-                } catch (_: Throwable) {
+                } catch (t: Throwable) {
+                    CrashLogger.logError("FFmpegEditorEngine.probeMedia", "MediaExtractor probe failed for $uri", t)
                 } finally {
-                    runCatching { extractor.release() }
+                    runCatching { extractor?.release() }
                 }
             }
 
@@ -139,6 +143,7 @@ object FFmpegEditorEngine {
                 val staged = stageUriToLocalFile(context, uri)
                 if (staged != null) {
                     val info = runCatching { FFprobeKit.getMediaInformation(staged.absolutePath) }
+                        .onFailure { t -> CrashLogger.logError("FFmpegEditorEngine.probeMedia", "FFprobe failed for $uri", t) }
                         .getOrNull()?.mediaInformation
                     val probeDurSec = info?.duration?.toDoubleOrNull()
                     if (probeDurSec != null && probeDurSec > 0.0) {
@@ -151,12 +156,14 @@ object FFmpegEditorEngine {
                 }
             }
 
+            val ok = durationMs > 0L
             ProbedMediaInfo(
                 durationMs = durationMs.coerceAtLeast(1000L),
                 width = width,
                 height = height,
                 hasAudio = hasAudio,
-                displayName = resolvedName
+                displayName = resolvedName,
+                probeSucceeded = ok
             )
         }
 
@@ -375,11 +382,12 @@ object FFmpegEditorEngine {
         val outDir = File(context.cacheDir, "editor_fx").apply { if (!exists()) mkdirs() }
         val pngFile = File(outDir, "freeze_${System.currentTimeMillis()}.png")
         val mp4File = File(outDir, "freeze_${System.currentTimeMillis()}.mp4")
-        val retriever = MediaMetadataRetriever()
+        var retriever: MediaMetadataRetriever? = null
         var w = clip.width
         var h = clip.height
 
         try {
+            retriever = MediaMetadataRetriever()
             var pfdOpened = false
             if (clip.sourceUri.scheme.equals("content", ignoreCase = true)) {
                 context.contentResolver.openFileDescriptor(clip.sourceUri, "r")?.use { pfd ->
@@ -425,7 +433,7 @@ object FFmpegEditorEngine {
             CrashLogger.logError("CreateFreezeFrame", "Unable to grab frame at ${sourceTimeMs}ms", t)
             return@withContext null
         } finally {
-            runCatching { retriever.release() }
+            runCatching { retriever?.release() }
         }
 
         val durSec = formatSec(durationMs)
@@ -469,6 +477,19 @@ object FFmpegEditorEngine {
                 "Add at least one video clip before exporting.",
                 CrashLogger.getLogDisplayPath()
             )
+        }
+
+        if (Media3ExportEngine.canExportWithMedia3(project, config)) {
+            onProgress(0.03f, "Starting hardware-accelerated Media3 export...")
+            val media3Result = Media3ExportEngine.exportComposition(
+                context = context,
+                project = project,
+                config = config,
+                onProgress = onProgress
+            )
+            if (media3Result != null) {
+                return@withContext media3Result
+            }
         }
 
         onProgress(0.03f, "Staging timeline media...")
@@ -873,15 +894,17 @@ object FFmpegEditorEngine {
         if (streams.isNotEmpty()) {
             return streams.any { it.type.equals("audio", ignoreCase = true) }
         }
-        val retriever = MediaMetadataRetriever()
+        var retriever: MediaMetadataRetriever? = null
         return try {
+            retriever = MediaMetadataRetriever()
             retriever.setDataSource(filePath)
             retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_HAS_AUDIO)
                 .equals("yes", ignoreCase = true)
-        } catch (_: Throwable) {
+        } catch (t: Throwable) {
+            CrashLogger.logError("FFmpegEditorEngine.probeHasAudioStream", "Failed checking audio for $filePath", t)
             false
         } finally {
-            runCatching { retriever.release() }
+            runCatching { retriever?.release() }
         }
     }
 
@@ -911,6 +934,13 @@ object FFmpegEditorEngine {
             CrashLogger.logError("FFmpegEditorEngine.stageUri", "Unable to copy URI $uri", t)
         }.getOrNull()
     }
+
+    internal fun publishExportToMoviesClotchPublic(
+        context: Context,
+        sourceFile: File,
+        fileName: String,
+        mimeType: String
+    ): Uri? = publishExportToMoviesClotch(context, sourceFile, fileName, mimeType)
 
     private fun publishExportToMoviesClotch(
         context: Context,

@@ -7,6 +7,7 @@ import android.net.Uri
 import androidx.test.core.app.ApplicationProvider
 import com.example.discord.DiscordConnectionState
 import com.example.discord.DiscordOAuthCallbackParser
+import com.example.discord.DiscordOAuthCallbackResult
 import com.example.discord.DiscordPresencePayload
 import com.example.discord.DiscordProfileManager
 import com.example.discord.DiscordRpcClient
@@ -140,24 +141,41 @@ class DiscordAndLifecycleTest {
 
     @Test
     fun discordOAuthParser_extractsFragmentTokenAndBuildsImplicitGrantUrl() {
-        val url = DiscordProfileManager.buildOAuthAuthorizeUrl("123456789012345678")
-        assertTrue(url.contains("response_type=token"))
-        assertTrue(url.contains("redirect_uri=clotch%3A%2F%2Fdiscord-callback"))
-        assertTrue(url.contains("scope=identify"))
+        val defaultUrl = DiscordProfileManager.buildOAuthAuthorizeUrl("123456789012345678")
+        assertTrue(defaultUrl.contains("response_type=token"))
+        assertTrue(defaultUrl.contains("redirect_uri=clotch%3A%2F%2Fdiscord-callback"))
+        assertTrue(defaultUrl.contains("scope=identify%20rpc"))
+
+        val fallbackUrl = DiscordProfileManager.buildOAuthAuthorizeUrl(
+            clientId = "123456789012345678",
+            useIdentifyFallback = true
+        )
+        assertTrue(fallbackUrl.contains("response_type=token"))
+        assertTrue(fallbackUrl.contains("redirect_uri=clotch%3A%2F%2Fdiscord-callback"))
+        assertTrue(fallbackUrl.contains("scope=identify"))
+        assertFalse(fallbackUrl.contains("rpc"))
 
         val successUri = Uri.parse(
             "clotch://discord-callback#access_token=abc_oauth_token_999&token_type=Bearer&expires_in=604800"
         )
         val parsed = DiscordOAuthCallbackParser.parse(successUri)
-        assertEquals("abc_oauth_token_999", parsed.accessToken)
-        assertNull(parsed.errorMessage)
+        assertTrue(parsed is DiscordOAuthCallbackResult.Token)
+        assertEquals("abc_oauth_token_999", (parsed as DiscordOAuthCallbackResult.Token).accessToken)
 
         val errUri = Uri.parse(
             "clotch://discord-callback?error=invalid_request&error_description=Invalid%20OAuth2%20redirect_uri"
         )
         val errParsed = DiscordOAuthCallbackParser.parse(errUri)
-        assertNull(errParsed.accessToken)
-        assertNotNull(errParsed.errorMessage)
-        assertTrue(errParsed.errorMessage!!.contains("clotch://discord-callback"))
+        assertTrue(errParsed is DiscordOAuthCallbackResult.Error)
+        val redirectErr = errParsed as DiscordOAuthCallbackResult.Error
+        assertTrue(redirectErr.isRedirectUriError)
+        assertTrue(redirectErr.message.contains("clotch://discord-callback"))
+
+        val scopeErrUri = Uri.parse(
+            "clotch://discord-callback?error=invalid_scope&error_description=Invalid%20scope%20rpc"
+        )
+        val scopeErrParsed = DiscordOAuthCallbackParser.parse(scopeErrUri)
+        assertTrue(scopeErrParsed is DiscordOAuthCallbackResult.Error)
+        assertTrue((scopeErrParsed as DiscordOAuthCallbackResult.Error).message.contains("fallback", ignoreCase = true))
     }
 }

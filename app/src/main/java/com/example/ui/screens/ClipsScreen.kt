@@ -649,8 +649,9 @@ private suspend fun extractFirstVideoFrame(context: Context, uri: Uri, sizeBytes
     val appContext = context.applicationContext
     return withContext(ClipsThumbnailCache.decodeDispatcher) {
         ClipsThumbnailCache.get(uri, sizeBytes)?.let { return@withContext it }
-        val retriever = MediaMetadataRetriever()
+        var retriever: MediaMetadataRetriever? = null
         val rawDecoded = try {
+            retriever = MediaMetadataRetriever()
             var pfdOk = false
             if (uri.scheme.equals("content", ignoreCase = true)) {
                 appContext.contentResolver.openFileDescriptor(uri, "r")?.use { pfd ->
@@ -671,13 +672,15 @@ private suspend fun extractFirstVideoFrame(context: Context, uri: Uri, sizeBytes
             } else {
                 retriever.getFrameAtTime(0L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
             }
-        } catch (_: OutOfMemoryError) {
+        } catch (oom: OutOfMemoryError) {
             ClipsThumbnailCache.trimAll()
+            com.example.diagnostics.CrashLogger.logError("ClipsScreen.Thumbnail", "OOM extracting clip thumb for $uri", oom)
             null
-        } catch (_: Throwable) {
+        } catch (t: Throwable) {
+            com.example.diagnostics.CrashLogger.logError("ClipsScreen.Thumbnail", "Failed extracting clip thumb for $uri", t)
             null
         } finally {
-            runCatching { retriever.release() }
+            runCatching { retriever?.release() }
         }
         val compact = compactThumbBitmap(rawDecoded, 192, 192)
         if (compact != null && !compact.isRecycled) {

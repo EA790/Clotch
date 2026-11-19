@@ -69,10 +69,16 @@ object DiscordOAuthCallbackParser {
             val friendly = errorDesc?.replace('+', ' ')?.takeIf { it.isNotBlank() } ?: error
             val isRedirectIssue = friendly.contains("redirect_uri", ignoreCase = true) ||
                 error.contains("redirect_uri", ignoreCase = true)
-            val message = if (isRedirectIssue) {
-                "Invalid OAuth2 redirect_uri: Add ${DiscordProfileManager.OAUTH_REDIRECT_URI} under OAuth2 Redirects in Discord Developer Portal."
-            } else {
-                "Discord OAuth2 cancelled or denied: $friendly"
+            val isScopeIssue = error.equals("invalid_scope", ignoreCase = true) ||
+                friendly.contains("scope", ignoreCase = true) ||
+                friendly.contains("rpc", ignoreCase = true)
+            val message = when {
+                isRedirectIssue ->
+                    "Invalid OAuth2 redirect_uri: Add ${DiscordProfileManager.OAUTH_REDIRECT_URI} under OAuth2 Redirects in Discord Developer Portal."
+                isScopeIssue ->
+                    "Discord rejected the 'rpc' scope for this app. Enable the 'identify only' fallback option in the Discord Sign-In dialog and try again."
+                else ->
+                    "Discord OAuth2 cancelled or denied: $friendly"
             }
             return DiscordOAuthCallbackResult.Error(message, isRedirectUriError = isRedirectIssue)
         }
@@ -106,7 +112,27 @@ class DiscordProfileManager(private val context: Context) {
 
     companion object {
         const val OAUTH_REDIRECT_URI = "clotch://discord-callback"
+        const val OAUTH_SCOPE_DEFAULT = "identify rpc"
+        const val OAUTH_SCOPE_IDENTIFY_ONLY = "identify"
         private const val DISCORD_API_ME = "https://discord.com/api/v10/users/@me"
+
+        fun buildOAuthAuthorizeUrl(
+            clientId: String,
+            useIdentifyFallback: Boolean = false
+        ): String {
+            val scope = if (useIdentifyFallback) OAUTH_SCOPE_IDENTIFY_ONLY else OAUTH_SCOPE_DEFAULT
+            return Uri.Builder()
+                .scheme("https")
+                .authority("discord.com")
+                .appendPath("oauth2")
+                .appendPath("authorize")
+                .appendQueryParameter("client_id", clientId.trim())
+                .appendQueryParameter("redirect_uri", OAUTH_REDIRECT_URI)
+                .appendQueryParameter("response_type", "token")
+                .appendQueryParameter("scope", scope)
+                .build()
+                .toString()
+        }
 
         fun sanitizeToken(rawToken: String): String {
             return rawToken.trim()
@@ -164,19 +190,10 @@ class DiscordProfileManager(private val context: Context) {
         context.discordProfileStore.edit { it[Keys.OAUTH_CLIENT_ID] = clientId.trim() }
     }
 
-    fun buildOAuthAuthorizeUrl(clientId: String): String {
-        return Uri.Builder()
-            .scheme("https")
-            .authority("discord.com")
-            .appendPath("oauth2")
-            .appendPath("authorize")
-            .appendQueryParameter("client_id", clientId.trim())
-            .appendQueryParameter("redirect_uri", OAUTH_REDIRECT_URI)
-            .appendQueryParameter("response_type", "token")
-            .appendQueryParameter("scope", "identify rpc")
-            .build()
-            .toString()
-    }
+    fun buildOAuthAuthorizeUrl(
+        clientId: String,
+        useIdentifyFallback: Boolean = false
+    ): String = Companion.buildOAuthAuthorizeUrl(clientId, useIdentifyFallback)
 
     suspend fun fetchAndSaveProfile(
         rawToken: String,

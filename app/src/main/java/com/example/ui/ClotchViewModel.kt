@@ -243,7 +243,10 @@ class ClotchViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    fun buildOAuthUrlAndSaveClientId(clientId: String): String? {
+    fun buildOAuthUrlAndSaveClientId(
+        clientId: String,
+        useIdentifyFallback: Boolean = false
+    ): String? {
         val trimmed = clientId.trim()
         if (!DiscordProfileManager.isValidOAuthClientId(trimmed)) {
             showToast("Enter a valid numeric Discord Application Client ID")
@@ -252,7 +255,7 @@ class ClotchViewModel(application: Application) : AndroidViewModel(application) 
         viewModelScope.launch {
             profileManager.saveOAuthClientId(trimmed)
         }
-        return profileManager.buildOAuthAuthorizeUrl(trimmed)
+        return profileManager.buildOAuthAuthorizeUrl(trimmed, useIdentifyFallback)
     }
 
     fun handleOAuthAccessToken(accessToken: String) {

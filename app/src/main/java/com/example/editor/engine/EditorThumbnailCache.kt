@@ -138,8 +138,9 @@ class EditorThumbnailCache {
         targetWidth: Int,
         targetHeight: Int
     ): Bitmap? {
-        val retriever = MediaMetadataRetriever()
+        var retriever: MediaMetadataRetriever? = null
         return try {
+            retriever = MediaMetadataRetriever()
             var pfdOk = false
             if (uri.scheme.equals("content", ignoreCase = true)) {
                 appContext.contentResolver.openFileDescriptor(uri, "r")?.use { pfd ->
@@ -169,11 +170,13 @@ class EditorThumbnailCache {
             }
         } catch (oom: OutOfMemoryError) {
             onTrimMemory(ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL)
+            CrashLogger.logError("EditorThumbnailCache", "OOM decoding thumbnail frame for $uri", oom)
             null
-        } catch (_: Throwable) {
+        } catch (t: Throwable) {
+            CrashLogger.logError("EditorThumbnailCache", "Thumbnail decode failed for $uri", t)
             null
         } finally {
-            runCatching { retriever.release() }
+            runCatching { retriever?.release() }
         }
     }
 

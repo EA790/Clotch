@@ -14,11 +14,10 @@ import android.media.MediaRecorder
 import android.media.projection.MediaProjection
 import android.os.Build
 import androidx.annotation.RequiresApi
-import com.arthenica.ffmpegkit.FFmpegKit
-import com.arthenica.ffmpegkit.ReturnCode
 import com.example.diagnostics.CrashLogger
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.io.FileDescriptor
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
 import java.io.File
@@ -289,6 +288,98 @@ class MicPcmCapturer(
     }
 }
 
+/**
+ * Simultaneous second MediaRecorder instance dedicated to Separate Audio microphone capture (.m4a).
+ * Records directly to AAC in an MPEG-4 container without any FFmpeg post-processing.
+ */
+class MicMediaRecorderCapturer(
+    private val context: android.content.Context,
+    private val m4aOutputFile: File
+) {
+    private var recorder: MediaRecorder? = null
+    private var isStarted = false
+    private var isPaused = false
+
+    fun start(): Boolean {
+        if (isStarted) return true
+        if (m4aOutputFile.exists()) m4aOutputFile.delete()
+
+        val sources = listOf(
+            MediaRecorder.AudioSource.MIC,
+            MediaRecorder.AudioSource.DEFAULT
+        )
+        for (source in sources) {
+            val candidate = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                MediaRecorder(context)
+            } else {
+                @Suppress("DEPRECATION")
+                MediaRecorder()
+            }
+            val started = try {
+                candidate.setAudioSource(source)
+                candidate.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+                candidate.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
+                candidate.setAudioChannels(2)
+                candidate.setAudioSamplingRate(InternalAudioCapturer.SAMPLE_RATE)
+                candidate.setAudioEncodingBitRate(192_000)
+                candidate.setOutputFile(m4aOutputFile.absolutePath)
+                candidate.prepare()
+                candidate.start()
+                recorder = candidate
+                isStarted = true
+                isPaused = false
+                true
+            } catch (t: Throwable) {
+                CrashLogger.logError("MicMediaRecorderCapturer", "Dual MediaRecorder source=$source failed", t)
+                runCatching { candidate.reset() }
+                runCatching { candidate.release() }
+                false
+            }
+            if (started) return true
+        }
+        runCatching { m4aOutputFile.delete() }
+        return false
+    }
+
+    fun setPaused(paused: Boolean) {
+        val rec = recorder ?: return
+        if (!isStarted || isPaused == paused) return
+        try {
+            if (paused) {
+                rec.pause()
+            } else {
+                rec.resume()
+            }
+            isPaused = paused
+        } catch (t: Throwable) {
+            CrashLogger.logError("MicMediaRecorderCapturer", "Pause/resume failed", t)
+        }
+    }
+
+    fun stop(): File? {
+        val rec = recorder
+        recorder = null
+        val wasStarted = isStarted
+        isStarted = false
+        isPaused = false
+        if (rec != null) {
+            if (wasStarted) {
+                runCatching { rec.stop() }.onFailure { t ->
+                    CrashLogger.logError("MicMediaRecorderCapturer", "MediaRecorder.stop failed", t)
+                }
+            }
+            runCatching { rec.reset() }
+            runCatching { rec.release() }
+        }
+        return m4aOutputFile.takeIf { it.exists() && it.length() > 0L }
+    }
+
+    fun releaseAndDelete() {
+        stop()
+        runCatching { m4aOutputFile.delete() }
+    }
+}
+
 object GameAudioPostProcessor {
 
     fun verifyMp4HasVideoTrack(file: File): Boolean {
@@ -316,37 +407,6 @@ object GameAudioPostProcessor {
     suspend fun encodePcmToM4a(pcmFile: File, outM4a: File): Boolean = withContext(Dispatchers.IO) {
         if (!pcmFile.exists() || pcmFile.length() <= 0L) return@withContext false
         if (outM4a.exists()) outM4a.delete()
-
-        val args = arrayOf(
-            "-y",
-            "-f", "s16le",
-            "-ar", InternalAudioCapturer.SAMPLE_RATE.toString(),
-            "-ac", "2",
-            "-i", pcmFile.absolutePath,
-            "-c:a", "aac",
-            "-b:a", "192k",
-            outM4a.absolutePath
-        )
-        val ffmpegOk = runCatching {
-            val session = FFmpegKit.executeWithArguments(args)
-            val ok = ReturnCode.isSuccess(session.returnCode) && outM4a.exists() && outM4a.length() > 0L
-            if (!ok) {
-                CrashLogger.logFfmpegFailure(
-                    operation = "EncodeAudioM4a",
-                    command = args.joinToString(" "),
-                    returnCode = session.returnCode?.toString(),
-                    logs = session.allLogsAsString ?: ""
-                )
-            }
-            ok
-        }.onFailure { t ->
-            CrashLogger.logError("GameAudioPostProcessor.Encode", "FFmpegKit encode threw", t)
-        }.getOrDefault(false)
-
-        if (ffmpegOk) return@withContext true
-
-        // Pure-Android MediaCodec + MediaMuxer fallback when FFmpegKit fails
-        runCatching { outM4a.delete() }
         encodeStereoPcmViaMediaCodec(pcmFile, outM4a)
     }
 
@@ -359,53 +419,20 @@ object GameAudioPostProcessor {
         val hasMic = micPcmFile != null && micPcmFile.exists() && micPcmFile.length() > 0L
 
         when {
-            hasGame && !hasMic -> encodePcmToM4a(gamePcmFile!!, outM4a)
-            !hasGame && hasMic -> encodePcmToM4a(micPcmFile!!, outM4a)
+            hasGame && !hasMic -> encodeStereoPcmViaMediaCodec(gamePcmFile!!, outM4a)
+            !hasGame && hasMic -> encodeStereoPcmViaMediaCodec(micPcmFile!!, outM4a)
             !hasGame && !hasMic -> false
             else -> {
                 if (outM4a.exists()) outM4a.delete()
-                val args = arrayOf(
-                    "-y",
-                    "-f", "s16le",
-                    "-ar", InternalAudioCapturer.SAMPLE_RATE.toString(),
-                    "-ac", "2",
-                    "-i", gamePcmFile!!.absolutePath,
-                    "-f", "s16le",
-                    "-ar", InternalAudioCapturer.SAMPLE_RATE.toString(),
-                    "-ac", "2",
-                    "-i", micPcmFile!!.absolutePath,
-                    "-filter_complex", "[0:a][1:a]amix=inputs=2:duration=longest:dropout_transition=0:normalize=0[aout]",
-                    "-map", "[aout]",
-                    "-c:a", "aac",
-                    "-b:a", "192k",
-                    outM4a.absolutePath
+                val mixedPcm = File(
+                    outM4a.parentFile ?: gamePcmFile!!.parentFile,
+                    "mixed_${System.currentTimeMillis()}.pcm"
                 )
-                val ffmpegOk = runCatching {
-                    val session = FFmpegKit.executeWithArguments(args)
-                    val ok = ReturnCode.isSuccess(session.returnCode) && outM4a.exists() && outM4a.length() > 0L
-                    if (!ok) {
-                        CrashLogger.logFfmpegFailure(
-                            operation = "MixNormalAudioM4a",
-                            command = args.joinToString(" "),
-                            returnCode = session.returnCode?.toString(),
-                            logs = session.allLogsAsString ?: ""
-                        )
-                    }
-                    ok
-                }.onFailure { t ->
-                    CrashLogger.logError("GameAudioPostProcessor.Mix", "FFmpegKit mix threw", t)
-                }.getOrDefault(false)
-
-                if (ffmpegOk) return@withContext true
-
-                // Kotlin clamped 16-bit PCM summer + MediaCodec fallback
-                runCatching { outM4a.delete() }
-                val mixedPcm = File(outM4a.parentFile ?: gamePcmFile.parentFile, "mixed_${System.currentTimeMillis()}.pcm")
-                return@withContext try {
-                    if (mixTwoStereoPcmFiles(gamePcmFile, micPcmFile, mixedPcm)) {
+                try {
+                    if (mixTwoStereoPcmFiles(gamePcmFile!!, micPcmFile!!, mixedPcm)) {
                         encodeStereoPcmViaMediaCodec(mixedPcm, outM4a)
                     } else {
-                        encodePcmToM4a(gamePcmFile, outM4a)
+                        encodeStereoPcmViaMediaCodec(gamePcmFile, outM4a)
                     }
                 } finally {
                     runCatching { mixedPcm.delete() }
@@ -421,50 +448,17 @@ object GameAudioPostProcessor {
     ): Boolean = withContext(Dispatchers.IO) {
         if (!videoFile.exists() || videoFile.length() <= 0L) return@withContext false
         if (destFile.exists()) destFile.delete()
-
-        val hasAudio = audioM4a != null && audioM4a.exists() && audioM4a.length() > 0L
-        val args = if (hasAudio) {
-            arrayOf(
-                "-y",
-                "-i", videoFile.absolutePath,
-                "-i", audioM4a!!.absolutePath,
-                "-map", "0:v:0",
-                "-map", "1:a:0",
-                "-c:v", "copy",
-                "-c:a", "aac",
-                "-b:a", "192k",
-                "-shortest",
-                destFile.absolutePath
-            )
-        } else {
-            arrayOf(
-                "-y",
-                "-i", videoFile.absolutePath,
-                "-c", "copy",
-                destFile.absolutePath
-            )
-        }
-
-        val ffmpegOk = runCatching {
-            val session = FFmpegKit.executeWithArguments(args)
-            val ok = ReturnCode.isSuccess(session.returnCode) && destFile.exists() && destFile.length() > 0L
-            if (!ok) {
-                CrashLogger.logFfmpegFailure(
-                    operation = "MuxVideoWithAudio",
-                    command = args.joinToString(" "),
-                    returnCode = session.returnCode?.toString(),
-                    logs = session.allLogsAsString ?: ""
-                )
-            }
-            ok
-        }.onFailure { t ->
-            CrashLogger.logError("GameAudioPostProcessor.Mux", "FFmpegKit mux threw", t)
-        }.getOrDefault(false)
-
-        if (ffmpegOk) return@withContext true
-
-        // Native MediaMuxer fallback if FFmpeg failed
         muxViaAndroidMediaMuxer(videoFile, audioM4a, destFile)
+    }
+
+    @RequiresApi(Build.VERSION_CODES.O)
+    suspend fun muxVideoWithAudioToFd(
+        videoFile: File,
+        audioM4a: File?,
+        destFd: FileDescriptor
+    ): Boolean = withContext(Dispatchers.IO) {
+        if (!videoFile.exists() || videoFile.length() <= 0L) return@withContext false
+        muxViaAndroidMediaMuxerToFd(videoFile, audioM4a, destFd)
     }
 
     private fun mixTwoStereoPcmFiles(firstPcm: File, secondPcm: File, destPcm: File): Boolean {
@@ -628,11 +622,47 @@ object GameAudioPostProcessor {
         audioFile: File?,
         destFile: File
     ): Boolean {
-        val videoExtractor = MediaExtractor()
-        val audioExtractor = MediaExtractor()
-        var muxer: MediaMuxer? = null
         return try {
             if (destFile.exists()) destFile.delete()
+            val muxer = MediaMuxer(
+                destFile.absolutePath,
+                MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4
+            )
+            runMuxCopyLoop(videoFile, audioFile, muxer) && destFile.exists() && destFile.length() > 0L
+        } catch (t: Throwable) {
+            CrashLogger.logError("GameAudioPostProcessor.MediaMuxer", "Native MediaMuxer failed", t)
+            runCatching { destFile.delete() }
+            false
+        }
+    }
+
+    @RequiresApi(Build.VERSION_CODES.O)
+    private fun muxViaAndroidMediaMuxerToFd(
+        videoFile: File,
+        audioFile: File?,
+        destFd: FileDescriptor
+    ): Boolean {
+        return try {
+            val muxer = MediaMuxer(
+                destFd,
+                MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4
+            )
+            runMuxCopyLoop(videoFile, audioFile, muxer)
+        } catch (t: Throwable) {
+            CrashLogger.logError("GameAudioPostProcessor.MediaMuxerFd", "Native MediaMuxer(FD) failed", t)
+            false
+        }
+    }
+
+    private fun runMuxCopyLoop(
+        videoFile: File,
+        audioFile: File?,
+        muxer: MediaMuxer
+    ): Boolean {
+        val videoExtractor = MediaExtractor()
+        val audioExtractor = MediaExtractor()
+        var muxerStarted = false
+        return try {
             videoExtractor.setDataSource(videoFile.absolutePath)
             var videoTrackSrc = -1
             var videoFormat: MediaFormat? = null
@@ -664,10 +694,6 @@ object GameAudioPostProcessor {
                 }
             }
 
-            muxer = MediaMuxer(
-                destFile.absolutePath,
-                MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4
-            )
             val dstVideoTrack = muxer.addTrack(videoFormat)
             val dstAudioTrack = if (audioTrackSrc >= 0 && audioFormat != null) {
                 runCatching { muxer.addTrack(audioFormat!!) }.getOrDefault(-1)
@@ -675,8 +701,9 @@ object GameAudioPostProcessor {
                 -1
             }
             muxer.start()
+            muxerStarted = true
 
-            val buf = ByteBuffer.allocate(512 * 1024)
+            val buf = ByteBuffer.allocateDirect(1024 * 1024)
             val info = MediaCodec.BufferInfo()
 
             videoExtractor.selectTrack(videoTrackSrc)
@@ -703,13 +730,14 @@ object GameAudioPostProcessor {
                 }
             }
             muxer.stop()
-            destFile.exists() && destFile.length() > 0L
+            muxerStarted = false
+            true
         } catch (t: Throwable) {
-            CrashLogger.logError("GameAudioPostProcessor.MediaMuxer", "Native mux fallback failed", t)
-            runCatching { destFile.delete() }
+            CrashLogger.logError("GameAudioPostProcessor.MuxLoop", "Track copy mux failed", t)
             false
         } finally {
-            runCatching { muxer?.release() }
+            if (muxerStarted) runCatching { muxer.stop() }
+            runCatching { muxer.release() }
             runCatching { videoExtractor.release() }
             runCatching { audioExtractor.release() }
         }

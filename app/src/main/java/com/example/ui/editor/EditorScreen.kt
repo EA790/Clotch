@@ -60,6 +60,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -184,6 +185,12 @@ fun EditorScreen(
         } else {
             pendingCaptionMode = null
             editorViewModel.showToast("Microphone permission is required")
+        }
+    }
+
+    LaunchedEffect(editorViewModel) {
+        editorViewModel.loadFailureEvents.collect {
+            onNavigateToClips()
         }
     }
 

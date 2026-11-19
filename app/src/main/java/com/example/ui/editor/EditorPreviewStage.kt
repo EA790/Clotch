@@ -61,6 +61,7 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import com.example.R
+import com.example.diagnostics.CrashLogger
 import com.example.editor.EditorPreviewError
 import com.example.editor.model.ColorFilterPreset
 import com.example.editor.model.EditorFontChoice
@@ -111,23 +112,34 @@ fun EditorPreviewStage(
     val latestOnPrepare by rememberUpdatedState(onPreparePreview)
     val latestOnStop by rememberUpdatedState(onStopPreview)
     var playerViewRef by remember { mutableStateOf<PlayerView?>(null) }
+    var playerViewError by remember { mutableStateOf<String?>(null) }
 
     DisposableEffect(lifecycleOwner, exoPlayer, isEditorActive) {
         if (!isEditorActive) {
             playerViewRef?.let { pv ->
-                pv.visibility = View.INVISIBLE
-                pv.onPause()
-                pv.player = null
+                runCatching {
+                    pv.visibility = View.INVISIBLE
+                    pv.onPause()
+                    pv.player = null
+                }.onFailure { t ->
+                    CrashLogger.logError("EditorPreviewStage.Detach", "Failed detaching PlayerView on inactive", t)
+                }
             }
             latestOnStop()
         } else {
+            playerViewError = null
             latestOnPrepare()
             playerViewRef?.let { pv ->
-                pv.visibility = if (exoPlayer != null && previewError == null) View.VISIBLE else View.INVISIBLE
-                if (pv.player !== exoPlayer) {
-                    pv.player = exoPlayer
+                runCatching {
+                    pv.visibility = if (exoPlayer != null && previewError == null) View.VISIBLE else View.INVISIBLE
+                    if (pv.player !== exoPlayer) {
+                        pv.player = exoPlayer
+                    }
+                    if (exoPlayer != null) pv.onResume() else pv.onPause()
+                }.onFailure { t ->
+                    CrashLogger.logError("EditorPreviewStage.Attach", "Failed attaching ExoPlayer to PlayerView", t)
+                    playerViewError = "Unable to attach video surface (logged to clotch_crash.txt)"
                 }
-                if (exoPlayer != null) pv.onResume() else pv.onPause()
             }
         }
 
@@ -137,19 +149,27 @@ fun EditorPreviewStage(
                     if (isEditorActive) {
                         latestOnPrepare()
                         playerViewRef?.let { pv ->
-                            pv.visibility = if (exoPlayer != null) View.VISIBLE else View.INVISIBLE
-                            if (pv.player !== exoPlayer) {
-                                pv.player = exoPlayer
+                            runCatching {
+                                pv.visibility = if (exoPlayer != null) View.VISIBLE else View.INVISIBLE
+                                if (pv.player !== exoPlayer) {
+                                    pv.player = exoPlayer
+                                }
+                                if (exoPlayer != null) pv.onResume()
+                            }.onFailure { t ->
+                                CrashLogger.logError("EditorPreviewStage.OnStart", "Failed resuming PlayerView", t)
                             }
-                            if (exoPlayer != null) pv.onResume()
                         }
                     }
                 }
                 Lifecycle.Event.ON_STOP -> {
                     playerViewRef?.let { pv ->
-                        pv.visibility = View.INVISIBLE
-                        pv.onPause()
-                        pv.player = null
+                        runCatching {
+                            pv.visibility = View.INVISIBLE
+                            pv.onPause()
+                            pv.player = null
+                        }.onFailure { t ->
+                            CrashLogger.logError("EditorPreviewStage.OnStop", "Failed stopping PlayerView", t)
+                        }
                     }
                     latestOnStop()
                 }
@@ -161,9 +181,13 @@ fun EditorPreviewStage(
         onDispose {
             lifecycleOwner.lifecycle.removeObserver(observer)
             playerViewRef?.let { pv ->
-                pv.visibility = View.INVISIBLE
-                pv.onPause()
-                pv.player = null
+                runCatching {
+                    pv.visibility = View.INVISIBLE
+                    pv.onPause()
+                    pv.player = null
+                }.onFailure { t ->
+                    CrashLogger.logError("EditorPreviewStage.Dispose", "Failed disposing PlayerView", t)
+                }
             }
             latestOnStop()
         }
@@ -312,50 +336,71 @@ fun EditorPreviewStage(
 
                     val playheadState = playheadMsFlow.collectAsStateWithLifecycle()
 
-                    if (isEditorActive && exoPlayer != null) {
+                    if (isEditorActive && exoPlayer != null && playerViewError == null) {
                         AndroidView(
                             factory = { ctx ->
-                                val inflated = LayoutInflater.from(ctx).inflate(
-                                    R.layout.view_editor_player,
-                                    null,
-                                    false
-                                ) as PlayerView
-                                inflated.apply {
-                                    useController = false
-                                    resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
-                                    setShowBuffering(PlayerView.SHOW_BUFFERING_NEVER)
-                                    setKeepContentOnPlayerReset(true)
-                                    layoutParams = ViewGroup.LayoutParams(
-                                        ViewGroup.LayoutParams.MATCH_PARENT,
-                                        ViewGroup.LayoutParams.MATCH_PARENT
-                                    )
-                                    player = exoPlayer
-                                    visibility = View.VISIBLE
-                                    playerViewRef = this
+                                try {
+                                    val inflated = LayoutInflater.from(ctx).inflate(
+                                        R.layout.view_editor_player,
+                                        null,
+                                        false
+                                    ) as PlayerView
+                                    inflated.apply {
+                                        useController = false
+                                        resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
+                                        setShowBuffering(PlayerView.SHOW_BUFFERING_NEVER)
+                                        setKeepContentOnPlayerReset(true)
+                                        layoutParams = ViewGroup.LayoutParams(
+                                            ViewGroup.LayoutParams.MATCH_PARENT,
+                                            ViewGroup.LayoutParams.MATCH_PARENT
+                                        )
+                                        player = exoPlayer
+                                        visibility = View.VISIBLE
+                                        playerViewRef = this
+                                    }
+                                } catch (t: Throwable) {
+                                    CrashLogger.logError("EditorPreviewStage.Factory", "Failed inflating PlayerView", t)
+                                    playerViewError = "Video surface unavailable (logged to clotch_crash.txt)"
+                                    View(ctx)
                                 }
                             },
-                            update = { pv ->
-                                playerViewRef = pv
-                                pv.setKeepContentOnPlayerReset(true)
-                                pv.visibility = View.VISIBLE
-                                if (pv.player !== exoPlayer) {
-                                    pv.player = exoPlayer
-                                    pv.onResume()
+                            update = { view ->
+                                val pv = view as? PlayerView ?: return@AndroidView
+                                runCatching {
+                                    playerViewRef = pv
+                                    pv.setKeepContentOnPlayerReset(true)
+                                    pv.visibility = View.VISIBLE
+                                    if (pv.player !== exoPlayer) {
+                                        pv.player = exoPlayer
+                                        pv.onResume()
+                                    }
+                                }.onFailure { t ->
+                                    CrashLogger.logError("EditorPreviewStage.Update", "Failed updating PlayerView", t)
                                 }
                             },
-                            onReset = { pv ->
-                                pv.visibility = View.INVISIBLE
-                                pv.onPause()
-                                pv.player = null
-                                exoPlayer.clearVideoSurface()
+                            onReset = { view ->
+                                val pv = view as? PlayerView ?: return@AndroidView
+                                runCatching {
+                                    pv.visibility = View.INVISIBLE
+                                    pv.onPause()
+                                    pv.player = null
+                                    exoPlayer.clearVideoSurface()
+                                }.onFailure { t ->
+                                    CrashLogger.logError("EditorPreviewStage.Reset", "Failed resetting PlayerView", t)
+                                }
                             },
-                            onRelease = { pv ->
-                                pv.visibility = View.INVISIBLE
-                                pv.onPause()
-                                pv.player = null
-                                exoPlayer.clearVideoSurface()
-                                if (playerViewRef === pv) {
-                                    playerViewRef = null
+                            onRelease = { view ->
+                                val pv = view as? PlayerView ?: return@AndroidView
+                                runCatching {
+                                    pv.visibility = View.INVISIBLE
+                                    pv.onPause()
+                                    pv.player = null
+                                    exoPlayer.clearVideoSurface()
+                                    if (playerViewRef === pv) {
+                                        playerViewRef = null
+                                    }
+                                }.onFailure { t ->
+                                    CrashLogger.logError("EditorPreviewStage.Release", "Failed releasing PlayerView", t)
                                 }
                             },
                             modifier = Modifier
@@ -376,6 +421,21 @@ fun EditorPreviewStage(
                                     }
                                 }
                         )
+                    } else if (playerViewError != null) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .background(CarbonSurface)
+                                .padding(12.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = playerViewError.orEmpty(),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = WarningAmber,
+                                textAlign = TextAlign.Center
+                            )
+                        }
                     }
 
                     PreviewLiveOverlaysLayer(

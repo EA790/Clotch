@@ -1,7 +1,9 @@
 package com.example
 
 import android.content.ComponentCallbacks2
+import android.content.Context
 import android.net.Uri
+import androidx.test.core.app.ApplicationProvider
 import com.example.data.AudioCaptureSource
 import com.example.data.ClotchSettings
 import com.example.data.CompanionTrackMatcher
@@ -10,7 +12,9 @@ import com.example.data.VideoFormat
 import com.example.diagnostics.MemoryPressureListener
 import com.example.diagnostics.MemoryPressureManager
 import com.example.editor.engine.EditorThumbnailCache
+import com.example.editor.engine.FFmpegEditorEngine
 import com.example.editor.engine.FFmpegFilterBuilder
+import com.example.editor.engine.Media3ExportEngine
 import com.example.editor.model.AudioClipKind
 import com.example.editor.model.ClipKeyframe
 import com.example.editor.model.ColorFilterPreset
@@ -25,6 +29,7 @@ import com.example.editor.model.TimelineVideoClip
 import com.example.editor.model.TransitionSpec
 import com.example.editor.model.TransitionType
 import com.example.editor.model.UpscaleTarget
+import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -317,5 +322,49 @@ class EditorModelsTest {
         } finally {
             thumbCache.release()
         }
+    }
+
+    @Test
+    fun media3ExportEngine_acceptsMp4WithSeparateM4aAndRejectsUnsupportedFx() {
+        val baseClip = TimelineVideoClip(
+            id = "v1",
+            sourceUri = Uri.parse("file:///tmp/main.mp4"),
+            displayName = "clip.mp4",
+            sourceDurationMs = 15_000L
+        )
+        val separateMic = TimelineAudioClip(
+            id = "mic1",
+            sourceUri = Uri.parse("file:///tmp/mic.m4a"),
+            displayName = "Microphone",
+            kind = AudioClipKind.MIC,
+            timelineStartMs = 0L,
+            sourceDurationMs = 15_000L
+        )
+        val mp4Config = EditorExportConfig(format = VideoFormat.MP4)
+        val separateProject = EditorProject(
+            videoClips = listOf(baseClip),
+            audioClips = listOf(separateMic)
+        )
+        assertTrue(Media3ExportEngine.canExportWithMedia3(separateProject, mp4Config))
+
+        val mkvConfig = EditorExportConfig(format = VideoFormat.MKV)
+        assertFalse(Media3ExportEngine.canExportWithMedia3(separateProject, mkvConfig))
+
+        val filteredProject = separateProject.copy(
+            videoClips = listOf(baseClip.copy(filterPreset = ColorFilterPreset.CYBER))
+        )
+        assertFalse(Media3ExportEngine.canExportWithMedia3(filteredProject, mp4Config))
+    }
+
+    @Test
+    fun ffmpegEditorEngine_probeInvalidUriReturnsProbeFailedWithoutCrashing() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val info = FFmpegEditorEngine.probeMedia(
+            context = context,
+            uri = Uri.parse("file:///nonexistent_clotch_test_video.mp4"),
+            fallbackName = "BrokenClip"
+        )
+        assertFalse(info.probeSucceeded)
+        assertEquals("nonexistent_clotch_test_video.mp4", info.displayName)
     }
 }

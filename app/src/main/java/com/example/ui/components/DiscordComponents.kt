@@ -3,12 +3,14 @@ package com.example.ui.components
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -32,6 +34,8 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -366,12 +370,13 @@ fun DiscordSignInDialog(
     isLoading: Boolean,
     onDismiss: () -> Unit,
     onSignInWithToken: (String) -> Unit,
-    onLaunchOAuthBrowser: (String) -> Unit
+    onLaunchOAuthBrowser: (String, Boolean) -> Unit
 ) {
     var selectedTab by remember { mutableIntStateOf(0) }
     var tokenInput by remember(initialToken) { mutableStateOf(initialToken) }
     var clientIdInput by remember(initialClientId) { mutableStateOf(initialClientId) }
     var showToken by remember { mutableStateOf(false) }
+    var useIdentifyFallback by remember { mutableStateOf(false) }
 
     Dialog(onDismissRequest = onDismiss) {
         Surface(
@@ -527,6 +532,49 @@ fun DiscordSignInDialog(
                         shape = ClotchInputShape,
                         colors = clotchTonalFieldColors(accentColor = ClotchBlue)
                     )
+                    Surface(
+                        color = CarbonSurface,
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .defaultMinSize(minHeight = 48.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .clickable { useIdentifyFallback = !useIdentifyFallback }
+                            .testTag("oauth_identify_fallback_toggle")
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
+                                Text(
+                                    text = "Fallback to 'identify' scope only",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = TextPrimary
+                                )
+                                Text(
+                                    text = if (useIdentifyFallback) {
+                                        "Scope: identify (safe if Discord rejects rpc)"
+                                    } else {
+                                        "Default scope: identify rpc"
+                                    },
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = TextSecondary
+                                )
+                            }
+                            Switch(
+                                checked = useIdentifyFallback,
+                                onCheckedChange = { useIdentifyFallback = it },
+                                colors = SwitchDefaults.colors(
+                                    checkedThumbColor = TextPrimary,
+                                    checkedTrackColor = ClotchBlue
+                                )
+                            )
+                        }
+                    }
                 }
 
                 Row(
@@ -558,7 +606,7 @@ fun DiscordSignInDialog(
                         }
                     } else {
                         TactilePillButton(
-                            onClick = { onLaunchOAuthBrowser(clientIdInput) },
+                            onClick = { onLaunchOAuthBrowser(clientIdInput, useIdentifyFallback) },
                             enabled = clientIdInput.isNotBlank(),
                             modifier = Modifier.testTag("dialog_discord_oauth_button"),
                             containerColor = ClotchBlue,

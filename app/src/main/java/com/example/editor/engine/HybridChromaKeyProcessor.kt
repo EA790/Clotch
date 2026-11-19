@@ -94,9 +94,10 @@ class HybridChromaKeyProcessor {
             mkdirs()
         }
         val outMatteVideo = File(context.cacheDir, "editor_matte_${clip.id}_${System.currentTimeMillis()}.mp4")
-        val retriever = MediaMetadataRetriever()
+        var retriever: MediaMetadataRetriever? = null
 
         try {
+            retriever = MediaMetadataRetriever()
             retriever.setDataSource(stagedVideoFile.absolutePath)
             val sampleFps = 10
             val totalEffectiveMs = clip.effectiveDurationMs.coerceAtLeast(500L)
@@ -185,7 +186,7 @@ class HybridChromaKeyProcessor {
             CrashLogger.logError("HybridChromaKeyProcessor", "Failed generating alpha matte", t)
             null
         } finally {
-            runCatching { retriever.release() }
+            runCatching { retriever?.release() }
             runCatching { matteDir.deleteRecursively() }
         }
     }

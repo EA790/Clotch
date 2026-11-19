@@ -56,8 +56,11 @@ import com.example.editor.model.VoiceoverState
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -115,6 +118,9 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     private val _exoPlayerState = MutableStateFlow<ExoPlayer?>(null)
     val exoPlayerState: StateFlow<ExoPlayer?> = _exoPlayerState.asStateFlow()
 
+    private val _loadFailureEvents = MutableSharedFlow<String>(extraBufferCapacity = 1)
+    val loadFailureEvents: SharedFlow<String> = _loadFailureEvents.asSharedFlow()
+
     private val audioPreviewPlayers = mutableMapOf<String, ExoPlayer>()
     private val audioPlayerSignatures = mutableMapOf<String, String>()
 
@@ -135,36 +141,41 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     private var chromaJob: Job? = null
 
     @OptIn(UnstableApi::class)
-    private fun createConfiguredExoPlayer(webmMode: Boolean): ExoPlayer {
-        val renderersFactory = DefaultRenderersFactory(app)
-            .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER)
-            .setEnableDecoderFallback(true)
-        val extractorsFactory = if (webmMode) {
-            // Unindexed WEBM Matroska tracks stall or fail under constant-bitrate seeking
-            DefaultExtractorsFactory()
-        } else {
-            DefaultExtractorsFactory().setConstantBitrateSeekingEnabled(true)
-        }
-        val mediaSourceFactory = DefaultMediaSourceFactory(app, extractorsFactory)
-        val loadControl = DefaultLoadControl.Builder()
-            .setBufferDurationsMs(2_000, 10_000, 250, 500)
-            .setPrioritizeTimeOverSizeThresholds(true)
-            .build()
-        return ExoPlayer.Builder(app, renderersFactory)
-            .setMediaSourceFactory(mediaSourceFactory)
-            .setLoadControl(loadControl)
-            .setWakeMode(C.WAKE_MODE_LOCAL)
-            .build()
-            .apply {
-                setSeekParameters(
-                    if (webmMode || fallbackClosestSeekActive) {
-                        SeekParameters.CLOSEST_SYNC
-                    } else {
-                        SeekParameters.EXACT
-                    }
-                )
-                addListener(createPlayerListener(this))
+    private fun createConfiguredExoPlayer(webmMode: Boolean): ExoPlayer? {
+        return try {
+            val renderersFactory = DefaultRenderersFactory(app)
+                .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER)
+                .setEnableDecoderFallback(true)
+            val extractorsFactory = if (webmMode) {
+                // Unindexed WEBM Matroska tracks stall or fail under constant-bitrate seeking
+                DefaultExtractorsFactory()
+            } else {
+                DefaultExtractorsFactory().setConstantBitrateSeekingEnabled(true)
             }
+            val mediaSourceFactory = DefaultMediaSourceFactory(app, extractorsFactory)
+            val loadControl = DefaultLoadControl.Builder()
+                .setBufferDurationsMs(2_000, 10_000, 250, 500)
+                .setPrioritizeTimeOverSizeThresholds(true)
+                .build()
+            ExoPlayer.Builder(app, renderersFactory)
+                .setMediaSourceFactory(mediaSourceFactory)
+                .setLoadControl(loadControl)
+                .setWakeMode(C.WAKE_MODE_LOCAL)
+                .build()
+                .apply {
+                    setSeekParameters(
+                        if (webmMode || fallbackClosestSeekActive) {
+                            SeekParameters.CLOSEST_SYNC
+                        } else {
+                            SeekParameters.EXACT
+                        }
+                    )
+                    addListener(createPlayerListener(this))
+                }
+        } catch (t: Throwable) {
+            CrashLogger.logError("Media3Preview.Create", "Failed creating ExoPlayer (webmMode=$webmMode)", t)
+            null
+        }
     }
 
     private fun createPlayerListener(owner: ExoPlayer): Player.Listener = object : Player.Listener {
@@ -242,18 +253,37 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    private fun ensureExoPlayer(webmMode: Boolean): ExoPlayer {
+    private fun ensureExoPlayer(webmMode: Boolean): ExoPlayer? {
         val existing = _exoPlayerState.value
         if (existing != null && currentPlayerUsesWebmExtractor == webmMode) {
             return existing
         }
         if (existing != null) {
             releaseExoPlayerInstance(existing)
+            _exoPlayerState.value = null
         }
         currentPlayerUsesWebmExtractor = webmMode
-        return createConfiguredExoPlayer(webmMode).also { created ->
-            _exoPlayerState.value = created
+        val created = createConfiguredExoPlayer(webmMode)
+        if (created == null) {
+            handleCriticalEditorLoadFailure(
+                userMessage = "Video player failed to initialize (logged to clotch_crash.txt)",
+                detail = "ensureExoPlayer returned null"
+            )
+            return null
         }
+        _exoPlayerState.value = created
+        return created
+    }
+
+    private fun handleCriticalEditorLoadFailure(
+        userMessage: String,
+        detail: String = userMessage,
+        throwable: Throwable? = null
+    ) {
+        CrashLogger.logError("EditorViewModel.LoadFailure", detail, throwable)
+        showToast(userMessage)
+        stopPreviewForExit()
+        _loadFailureEvents.tryEmit(userMessage)
     }
 
     private fun releaseExoPlayerInstance(player: ExoPlayer?) {
@@ -295,8 +325,18 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
             _isBusy.value = true
             try {
                 val info = FFmpegEditorEngine.probeMedia(app, uri, fallbackName)
-                val companionTracks = app.recordingController.clipsRepository
-                    .findCompanionAudioTracks(info.displayName)
+                if (!info.probeSucceeded) {
+                    handleCriticalEditorLoadFailure(
+                        userMessage = "Unable to load video in editor (logged to clotch_crash.txt)",
+                        detail = "Metadata probe returned no valid duration for $uri"
+                    )
+                    return@launch
+                }
+                val companionTracks = runCatching {
+                    app.recordingController.clipsRepository.findCompanionAudioTracks(info.displayName)
+                }.onFailure { t ->
+                    CrashLogger.logError("EditorViewModel.CompanionAudio", "Failed probing companion tracks for ${info.displayName}", t)
+                }.getOrDefault(emptyList())
                 val cur = _project.value
                 val insertionStartMs = cur.totalVideoDurationMs
 
@@ -304,7 +344,8 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
                     val resolvedDuration = if (track.durationMs > 250L) {
                         track.durationMs
                     } else {
-                        FFmpegEditorEngine.probeMedia(app, track.uri, track.kind.label).durationMs
+                        runCatching { FFmpegEditorEngine.probeMedia(app, track.uri, track.kind.label).durationMs }
+                            .getOrDefault(info.durationMs)
                     }.coerceAtLeast(info.durationMs.coerceAtMost(500L))
                     TimelineAudioClip(
                         sourceUri = track.uri,
@@ -347,8 +388,11 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
                     showToast("Added ${info.displayName}")
                 }
             } catch (t: Throwable) {
-                CrashLogger.logError("EditorViewModel.importVideoUri", "Failed to import $uri", t)
-                showToast("Failed to import clip")
+                handleCriticalEditorLoadFailure(
+                    userMessage = "Unable to load video in editor (logged to clotch_crash.txt)",
+                    detail = "Failed to import $uri",
+                    throwable = t
+                )
             } finally {
                 _isBusy.value = false
             }
@@ -407,15 +451,20 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
             _exoPlayerState.value
         } ?: return
         val currentPlayhead = _playheadMs.value
-        if (player.isPlaying) {
-            player.pause()
-            audioPreviewPlayers.values.forEach { runCatching { it.pause() } }
-            _project.value = _project.value.copy(playheadMs = currentPlayhead)
-        } else {
-            syncExoPlayerToTimelineMs(currentPlayhead)
-            syncAudioPreviewToTimelineMs(currentPlayhead)
-            player.play()
-            playActiveAudioTracksAt(currentPlayhead)
+        runCatching {
+            if (player.isPlaying) {
+                player.pause()
+                audioPreviewPlayers.values.forEach { runCatching { it.pause() } }
+                _project.value = _project.value.copy(playheadMs = currentPlayhead)
+            } else {
+                syncExoPlayerToTimelineMs(currentPlayhead)
+                syncAudioPreviewToTimelineMs(currentPlayhead)
+                player.play()
+                playActiveAudioTracksAt(currentPlayhead)
+            }
+        }.onFailure { t ->
+            CrashLogger.logError("EditorViewModel.PlayPause", "Playback toggle failed", t)
+            showToast("Playback error (logged to clotch_crash.txt)")
         }
     }
 
@@ -423,9 +472,15 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
         stopPlaybackTicker()
         _project.value = _project.value.copy(playheadMs = _playheadMs.value)
         _exoPlayerState.value?.let { player ->
-            if (player.isPlaying) player.pause()
+            runCatching {
+                if (player.isPlaying) player.pause()
+            }.onFailure { t ->
+                CrashLogger.logError("EditorViewModel.Pause", "Failed pausing video player", t)
+            }
         }
-        audioPreviewPlayers.values.forEach { if (it.isPlaying) it.pause() }
+        audioPreviewPlayers.values.forEach {
+            runCatching { if (it.isPlaying) it.pause() }
+        }
     }
 
     fun stopPreviewForExit() {
@@ -1228,8 +1283,9 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
         chromaJob?.cancel()
         chromaJob = viewModelScope.launch {
             val frame = withContext(Dispatchers.IO) {
-                val retriever = MediaMetadataRetriever()
+                var retriever: MediaMetadataRetriever? = null
                 try {
+                    retriever = MediaMetadataRetriever()
                     var pfdOk = false
                     if (clip.sourceUri.scheme.equals("content", ignoreCase = true)) {
                         app.contentResolver.openFileDescriptor(clip.sourceUri, "r")?.use { pfd ->
@@ -1265,10 +1321,11 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
                     } else {
                         raw
                     }
-                } catch (_: Throwable) {
+                } catch (t: Throwable) {
+                    CrashLogger.logError("EditorViewModel.ChromaPreview", "Failed grabbing chroma preview frame", t)
                     null
                 } finally {
-                    runCatching { retriever.release() }
+                    runCatching { retriever?.release() }
                 }
             } ?: return@launch
             val cutout = chromaProcessor.previewSegmentedFrame(frame, clip.chromaKey)
@@ -1546,37 +1603,45 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
         fallbackClosestSeekActive = hasWebm
 
         if (project.videoClips.isEmpty()) {
-            existingPlayer?.clearMediaItems()
+            runCatching { existingPlayer?.clearMediaItems() }
             return
         }
-        val player = ensureExoPlayer(webmMode = hasWebm)
-        player.setSeekParameters(
-            if (hasWebm || fallbackClosestSeekActive) SeekParameters.CLOSEST_SYNC else SeekParameters.EXACT
-        )
+        val player = ensureExoPlayer(webmMode = hasWebm) ?: return
+        try {
+            player.setSeekParameters(
+                if (hasWebm || fallbackClosestSeekActive) SeekParameters.CLOSEST_SYNC else SeekParameters.EXACT
+            )
 
-        val items = project.videoClips.map { clip ->
-            val builder = MediaItem.Builder()
-                .setMediaId(clip.id)
-                .setUri(clip.sourceUri)
-            if (isWebmClip(clip)) {
-                builder.setMimeType("video/webm")
+            val items = project.videoClips.map { clip ->
+                val builder = MediaItem.Builder()
+                    .setMediaId(clip.id)
+                    .setUri(clip.sourceUri)
+                if (isWebmClip(clip)) {
+                    builder.setMimeType("video/webm")
+                }
+                if (shouldClipVideo(clip)) {
+                    builder.setClippingConfiguration(
+                        MediaItem.ClippingConfiguration.Builder()
+                            .setStartPositionMs(clip.trimStartMs)
+                            .setEndPositionMs(clip.trimEndMs)
+                            .build()
+                    )
+                }
+                builder.build()
             }
-            if (shouldClipVideo(clip)) {
-                builder.setClippingConfiguration(
-                    MediaItem.ClippingConfiguration.Builder()
-                        .setStartPositionMs(clip.trimStartMs)
-                        .setEndPositionMs(clip.trimEndMs)
-                        .build()
-                )
-            }
-            builder.build()
+            val wasPlaying = player.isPlaying
+            player.setMediaItems(items, false)
+            player.prepare()
+            syncExoPlayerToTimelineMs(project.playheadMs)
+            applyLivePreviewPlaybackSettings()
+            if (wasPlaying) player.play()
+        } catch (t: Throwable) {
+            handleCriticalEditorLoadFailure(
+                userMessage = "Unable to load video in editor (logged to clotch_crash.txt)",
+                detail = "Failed preparing ExoPlayer playlist",
+                throwable = t
+            )
         }
-        val wasPlaying = player.isPlaying
-        player.setMediaItems(items, false)
-        player.prepare()
-        syncExoPlayerToTimelineMs(project.playheadMs)
-        applyLivePreviewPlaybackSettings()
-        if (wasPlaying) player.play()
     }
 
     @OptIn(UnstableApi::class)
@@ -1585,28 +1650,35 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
         val activeIds = project.audioClips.map { it.id }.toSet()
         val staleIds = audioPreviewPlayers.keys.filter { it !in activeIds }
         staleIds.forEach { staleId ->
-            audioPreviewPlayers.remove(staleId)?.release()
+            runCatching { audioPreviewPlayers.remove(staleId)?.release() }
             audioPlayerSignatures.remove(staleId)
         }
 
         project.audioClips.forEach { audio ->
             val sig = "${audio.sourceUri}:${audio.trimStartMs}:${audio.trimEndMs}"
             if (audioPlayerSignatures[audio.id] != sig) {
-                val player = audioPreviewPlayers.getOrPut(audio.id) {
-                    ExoPlayer.Builder(app).build()
+                try {
+                    val player = audioPreviewPlayers.getOrPut(audio.id) {
+                        ExoPlayer.Builder(app).build()
+                    }
+                    audioPlayerSignatures[audio.id] = sig
+                    val builder = MediaItem.Builder().setUri(audio.sourceUri)
+                    if (shouldClipAudio(audio)) {
+                        builder.setClippingConfiguration(
+                            MediaItem.ClippingConfiguration.Builder()
+                                .setStartPositionMs(audio.trimStartMs)
+                                .setEndPositionMs(audio.trimEndMs)
+                                .build()
+                        )
+                    }
+                    player.setMediaItem(builder.build())
+                    player.prepare()
+                } catch (t: Throwable) {
+                    CrashLogger.logError("Media3AudioPreview", "Failed preparing audio track ${audio.displayName}", t)
+                    runCatching { audioPreviewPlayers.remove(audio.id)?.release() }
+                    audioPlayerSignatures.remove(audio.id)
+                    showToast("Audio track unavailable: ${audio.displayName}")
                 }
-                audioPlayerSignatures[audio.id] = sig
-                val builder = MediaItem.Builder().setUri(audio.sourceUri)
-                if (shouldClipAudio(audio)) {
-                    builder.setClippingConfiguration(
-                        MediaItem.ClippingConfiguration.Builder()
-                            .setStartPositionMs(audio.trimStartMs)
-                            .setEndPositionMs(audio.trimEndMs)
-                            .build()
-                    )
-                }
-                player.setMediaItem(builder.build())
-                player.prepare()
             }
         }
         applyLivePreviewPlaybackSettings()
@@ -1655,16 +1727,20 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
         _project.value.audioClips.forEach { audio ->
             val player = audioPreviewPlayers[audio.id] ?: return@forEach
             val inWindow = timelineMs in audio.timelineStartMs until audio.timelineEndMs
-            if (inWindow) {
-                val offset = (timelineMs - audio.timelineStartMs).coerceIn(0L, audio.effectiveDurationMs)
-                if (kotlin.math.abs(player.currentPosition - offset) > 120L) {
-                    player.seekTo(offset)
+            runCatching {
+                if (inWindow) {
+                    val offset = (timelineMs - audio.timelineStartMs).coerceIn(0L, audio.effectiveDurationMs)
+                    if (kotlin.math.abs(player.currentPosition - offset) > 120L) {
+                        player.seekTo(offset)
+                    }
+                    if (!player.isPlaying) {
+                        player.play()
+                    }
+                } else if (player.isPlaying) {
+                    player.pause()
                 }
-                if (!player.isPlaying) {
-                    player.play()
-                }
-            } else if (player.isPlaying) {
-                player.pause()
+            }.onFailure { t ->
+                CrashLogger.logError("Media3AudioPreview.Play", "Audio playback sync failed for ${audio.displayName}", t)
             }
         }
     }
@@ -1678,32 +1754,40 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
         val speed = activeClip?.speed?.coerceIn(0.5f, 4.0f) ?: 1.0f
 
         if (player != null) {
-            if (vidVol != lastAppliedVideoVol) {
-                player.volume = vidVol
-                lastAppliedVideoVol = vidVol
-            }
-            if (speed != lastAppliedSpeed) {
-                player.playbackParameters = PlaybackParameters(speed, 1.0f)
-                lastAppliedSpeed = speed
+            runCatching {
+                if (vidVol != lastAppliedVideoVol) {
+                    player.volume = vidVol
+                    lastAppliedVideoVol = vidVol
+                }
+                if (speed != lastAppliedSpeed) {
+                    player.playbackParameters = PlaybackParameters(speed, 1.0f)
+                    lastAppliedSpeed = speed
+                }
+            }.onFailure { t ->
+                CrashLogger.logError("Media3Preview.Settings", "Failed applying playback settings", t)
             }
         }
 
-        val isPlayingNow = player?.isPlaying == true
+        val isPlayingNow = runCatching { player?.isPlaying == true }.getOrDefault(false)
         cur.audioClips.forEach { audio ->
             val audioPlayer = audioPreviewPlayers[audio.id] ?: return@forEach
             val inWindow = playheadMsOverride in audio.timelineStartMs until audio.timelineEndMs
             val targetVol = if (inWindow) audio.effectiveVolume.coerceIn(0f, 1f) else 0f
-            if (audioPlayer.volume != targetVol) {
-                audioPlayer.volume = targetVol
-            }
-            if (isPlayingNow) {
-                if (inWindow && !audioPlayer.isPlaying) {
-                    val offset = (playheadMsOverride - audio.timelineStartMs).coerceIn(0L, audio.effectiveDurationMs)
-                    audioPlayer.seekTo(offset)
-                    audioPlayer.play()
-                } else if (!inWindow && audioPlayer.isPlaying) {
-                    audioPlayer.pause()
+            runCatching {
+                if (audioPlayer.volume != targetVol) {
+                    audioPlayer.volume = targetVol
                 }
+                if (isPlayingNow) {
+                    if (inWindow && !audioPlayer.isPlaying) {
+                        val offset = (playheadMsOverride - audio.timelineStartMs).coerceIn(0L, audio.effectiveDurationMs)
+                        audioPlayer.seekTo(offset)
+                        audioPlayer.play()
+                    } else if (!inWindow && audioPlayer.isPlaying) {
+                        audioPlayer.pause()
+                    }
+                }
+            }.onFailure { t ->
+                CrashLogger.logError("Media3AudioPreview.Settings", "Failed syncing audio track ${audio.displayName}", t)
             }
         }
     }
@@ -1713,24 +1797,29 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
         playbackTickerJob = viewModelScope.launch {
             while (isActive) {
                 val player = _exoPlayerState.value ?: break
-                if (!player.isPlaying) break
-                val cur = _project.value
-                val idx = player.currentMediaItemIndex
-                val windows = cur.videoWindows()
-                if (idx in windows.indices) {
-                    val clip = windows[idx].clip
-                    val rawPos = player.currentPosition.coerceAtLeast(0L)
-                    val offsetInClip = if (shouldClipVideo(clip)) {
-                        rawPos
-                    } else {
-                        (rawPos - clip.trimStartMs).coerceAtLeast(0L)
+                val isPlaying = runCatching { player.isPlaying }.getOrDefault(false)
+                if (!isPlaying) break
+                runCatching {
+                    val cur = _project.value
+                    val idx = player.currentMediaItemIndex
+                    val windows = cur.videoWindows()
+                    if (idx in windows.indices) {
+                        val clip = windows[idx].clip
+                        val rawPos = player.currentPosition.coerceAtLeast(0L)
+                        val offsetInClip = if (shouldClipVideo(clip)) {
+                            rawPos
+                        } else {
+                            (rawPos - clip.trimStartMs).coerceAtLeast(0L)
+                        }
+                        val scaledPos = (offsetInClip / clip.speed.coerceIn(0.5f, 4f)).toLong()
+                        val globalPos = windows[idx].timelineStartMs + scaledPos
+                        if (_playheadMs.value != globalPos) {
+                            _playheadMs.value = globalPos
+                        }
+                        applyLivePreviewPlaybackSettings(playheadMsOverride = globalPos)
                     }
-                    val scaledPos = (offsetInClip / clip.speed.coerceIn(0.5f, 4f)).toLong()
-                    val globalPos = windows[idx].timelineStartMs + scaledPos
-                    if (_playheadMs.value != globalPos) {
-                        _playheadMs.value = globalPos
-                    }
-                    applyLivePreviewPlaybackSettings(playheadMsOverride = globalPos)
+                }.onFailure { t ->
+                    CrashLogger.logError("Media3Preview.Ticker", "Playback ticker failed", t)
                 }
                 delay(33L)
             }
